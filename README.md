@@ -18,11 +18,11 @@ A released version is final. The bucket refuses to replace an object, so a fix i
 
 Copy the file for your kind of set from `callers/` to `.github/workflows/Release.yaml` of the set's repository.
 
-| File                      | For                            | A release is                      |
-| ------------------------- | ------------------------------ | --------------------------------- |
-| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A pushed tag such as `19.0/1.4.0` |
-| `callers/enterprise.yaml` | The fork of Odoo Enterprise    | **Run workflow** with the series  |
-| `callers/oca.yaml`        | The OCA list                   | **Run workflow** with the series  |
+| File                      | For                            | A release is                        |
+| ------------------------- | ------------------------------ | ----------------------------------- |
+| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A pushed tag such as `19.0/1.4.0`   |
+| `callers/enterprise.yaml` | The fork of Odoo Enterprise    | **Run workflow**, all series or one |
+| `callers/oca.yaml`        | The OCA list                   | **Run workflow** with the series    |
 
 A new set repository also needs its name in the release role, `module_set_repositories` in
 `infra/tofu/envs/canary/core/module-sets.tf` of the platform. Without it the upload is refused.

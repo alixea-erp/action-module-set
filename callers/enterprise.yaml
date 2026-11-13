@@ -1,6 +1,7 @@
-# Copy to .github/workflows/Release.yaml of alixea-erp/odoo-enterprise, on its own branch "alixea", which is the fork's default
-# branch: Odoo's branches are never committed on, so syncing them stays a fast-forward. Takes Enterprise at the date of
-# Alixea's Odoo image of the series, tags that day's last commit <series>/<date> and releases it.
+# Copy to .github/workflows/Release.yaml of alixea-erp/odoo-enterprise, on its own branch "alixea", which is the fork's
+# default branch: Odoo's branches are never committed on, so syncing them stays a fast-forward. Takes Enterprise at the
+# date of Alixea's Odoo image of each series, tags that day's last commit <series>/<date> and releases it. "all" runs
+# every series at once, each in a job of its own.
 name: Release
 
 on:
@@ -8,21 +9,27 @@ on:
     inputs:
       series:
         type: choice
-        options: ['18.0', '19.0', '20.0']
+        options: ['all', '18.0', '19.0', '20.0']
+        default: 'all'
         required: true
       date:
-        description: YYYYMMDD. Empty, the date of the newest component-odoo image of the series
+        description: YYYYMMDD. Empty, the date of the newest component-odoo image of each series
         required: false
 
 jobs:
-  tag:
+  release:
+    name: Enterprise ${{ matrix.series }}
     runs-on: ubuntu-24.04
+    strategy:
+      # A series that fails, a missing image for one, leaves the others to finish
+      fail-fast: false
+      matrix:
+        series: ${{ inputs.series == 'all' && fromJSON('["18.0", "19.0", "20.0"]') || fromJSON(format('["{0}"]', inputs.series)) }}
     permissions:
       contents: write
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      id-token: write
     env:
-      SERIES: ${{ inputs.series }}
+      SERIES: ${{ matrix.series }}
       DATE: ${{ inputs.date }}
       GH_TOKEN: ${{ github.token }}
 
@@ -44,7 +51,7 @@ jobs:
       - name: Checkout the series branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.series }}
+          ref: ${{ matrix.series }}
           sparse-checkout: .github
 
       # Only the series branch's commits of the last 60 days, without files: all the date lookup needs
@@ -73,14 +80,8 @@ jobs:
           echo "Enterprise $SERIES at $commit ($(git log -1 --format=%cI "$commit")) is \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-  release:
-    needs: tag
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: alixea-erp/action-module-set@v1
+      - name: Release
+        uses: alixea-erp/action-module-set@v1
         with:
-          tag: ${{ needs.tag.outputs.tag }}
+          tag: ${{ steps.tag.outputs.tag }}
           install-modules: web_enterprise
