@@ -7,7 +7,8 @@
 # is ready to try and approve. "Run workflow" does the same by hand, for all series or one.
 #
 # Secrets: ODOO_ENTERPRISE_READ_TOKEN reads odoo/enterprise and is used for nothing else, as the workflow's own token
-# cannot see Odoo's repository and does all the writing here. SLACK_WEBHOOK_URL, when set, gets the messages.
+# cannot see Odoo's repository and does all the writing here. SLACK_ODOO_RELEASES_WEBHOOK_URL, an organisation
+# secret, gets the messages when it is set.
 name: Release
 
 on:
@@ -131,7 +132,7 @@ jobs:
       - name: Tell Slack it is ready
         if: steps.plan.outputs.skip != 'true'
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
@@ -141,7 +142,7 @@ jobs:
       - name: Tell Slack it failed
         if: failure()
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
         run: |
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
           text="The Enterprise $SERIES release failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand."
