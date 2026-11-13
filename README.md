@@ -18,11 +18,16 @@ A released version is final. The bucket refuses to replace an object, so a fix i
 
 Copy the file for your kind of set from `callers/` to `.github/workflows/Release.yaml` of the set's repository.
 
-| File                      | For                            | A release is                        |
-| ------------------------- | ------------------------------ | ----------------------------------- |
-| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A pushed tag such as `19.0/1.4.0`   |
-| `callers/enterprise.yaml` | The fork of Odoo Enterprise    | **Run workflow**, all series or one |
-| `callers/oca.yaml`        | The OCA list                   | **Run workflow** with the series    |
+| File                      | For                            | A release is                                                                      |
+| ------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
+| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A pushed tag such as `19.0/1.4.0`                                                 |
+| `callers/enterprise.yaml` | The fork of Odoo Enterprise    | By itself, after Pre-Build built an image of a new Odoo date. Or **Run workflow** |
+| `callers/oca.yaml`        | The OCA list                   | **Run workflow** with the series                                                  |
+
+The Enterprise fork also needs the secret `ODOO_ENTERPRISE_READ_TOKEN`: a token that can read `odoo/enterprise`.
+The workflow only fetches Odoo's commits with it. Everything it writes goes through its own token. Use a token of
+an account that has nothing else to reach. With the secret `SLACK_WEBHOOK_URL` it also says in Slack when a release
+is ready to try, and when one failed. An organisation secret serves the fork and `component-odoo` alike.
 
 A new set repository also needs its name in the release role, `module_set_repositories` in
 `infra/tofu/envs/canary/core/module-sets.tf` of the platform. Without it the upload is refused.

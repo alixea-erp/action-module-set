@@ -1,10 +1,18 @@
 # Copy to .github/workflows/Release.yaml of alixea-erp/odoo-enterprise, on its own branch "alixea", which is the fork's
 # default branch: Odoo's branches are never committed on, so syncing them stays a fast-forward. Takes Enterprise at the
-# date of Alixea's Odoo image of each series, tags that day's last commit <series>/<date> and releases it. "all" runs
-# every series at once, each in a job of its own.
+# date of Alixea's Odoo image of each series, tags that day's last commit <series>/<date> and releases it.
+#
+# Twice a day it looks for an image whose date has no release yet: Base Image Check in component-odoo builds a new
+# image when Odoo publishes one, so a new Odoo version is released here without anyone's click, and Slack says when it
+# is ready to try and approve. "Run workflow" does the same by hand, for all series or one.
+#
+# Secrets: ODOO_ENTERPRISE_READ_TOKEN reads odoo/enterprise and is used for nothing else, as the workflow's own token
+# cannot see Odoo's repository and does all the writing here. SLACK_WEBHOOK_URL, when set, gets the messages.
 name: Release
 
 on:
+  schedule:
+    - cron: '30 6,18 * * *'
   workflow_dispatch:
     inputs:
       series:
@@ -24,47 +32,80 @@ jobs:
       # A series that fails, a missing image for one, leaves the others to finish
       fail-fast: false
       matrix:
-        series: ${{ inputs.series == 'all' && fromJSON('["18.0", "19.0", "20.0"]') || fromJSON(format('["{0}"]', inputs.series)) }}
+        series: ${{ (github.event_name == 'schedule' || inputs.series == 'all') && fromJSON('["18.0", "19.0", "20.0"]') || fromJSON(format('["{0}"]', inputs.series)) }}
+    # A scheduled run and one by hand never tag the same series at once
+    concurrency:
+      group: enterprise-${{ matrix.series }}
     permissions:
       contents: write
       id-token: write
     env:
       SERIES: ${{ matrix.series }}
       DATE: ${{ inputs.date }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Date of the Odoo image
+      # A scheduled run releases only a date that has no tag yet. One by hand always runs: after a failed upload, its
+      # tag exists and only the upload is missing
+      - name: What to release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
         run: |
           if [ -z "$DATE" ]; then
-            DATE=$(docker buildx imagetools inspect "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$SERIES" --format '{{index .Image.Config.Labels "org.alixea.odoo.release"}}')
+            DATE=$(docker buildx imagetools inspect "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$SERIES" --format '{{index .Image.Config.Labels "org.alixea.odoo.release"}}' || true)
           fi
           if ! [[ "$DATE" =~ ^20[0-9]{6}$ ]]; then
-            echo "::error::No date. Build the image with Prebuild first, or pass the date"
+            if [ "$SCHEDULED" = true ]; then
+              echo "::notice::Our $SERIES image has no Odoo date yet. Nothing to release until Pre-Build has built it"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::No date. Build the image with Pre-Build first, or pass the date"
             exit 1
           fi
           echo "DATE=$DATE" >> "$GITHUB_ENV"
 
-      - name: Sync the series branch from Odoo
-        run: gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch="$SERIES"
+          released=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$SERIES/$DATE" --jq length)
+          if [ "$SCHEDULED" = true ] && [ "$released" != 0 ]; then
+            echo "Enterprise $SERIES of $DATE is released already"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
 
+      # Every commit of the branch and no files, so the push below can see it is a fast-forward
       - name: Checkout the series branch
+        if: steps.plan.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ matrix.series }}
+          fetch-depth: 0
+          filter: tree:0
           sparse-checkout: .github
 
-      # Only the series branch's commits of the last 60 days, without files: all the date lookup needs
-      - name: Fetch the branch's recent history
+      # Odoo's new commits come in as the reader and go to the fork as the workflow
+      - name: Sync the series branch from Odoo
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          ODOO_TOKEN: ${{ secrets.ODOO_ENTERPRISE_READ_TOKEN }}
         run: |
-          since=$(date -u -d "${DATE:0:4}-${DATE:4:2}-${DATE:6:2} - 60 days" +%Y-%m-%d)
-          git fetch -q --filter=tree:0 --shallow-since="$since" origin "+refs/heads/${SERIES}:refs/remotes/origin/${SERIES}"
+          if [ -z "$ODOO_TOKEN" ]; then
+            echo "::error::The secret ODOO_ENTERPRISE_READ_TOKEN is missing: a token that reads odoo/enterprise"
+            exit 1
+          fi
+          auth=$(printf 'x-access-token:%s' "$ODOO_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          # NOTE! checkout stored the workflow's token for every github.com url. Emptied and set again for this one fetch
+          git -c "http.https://github.com/.extraheader=" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch -q https://github.com/odoo/enterprise.git "+refs/heads/${SERIES}:refs/remotes/odoo/${SERIES}"
+          # GitHub refuses this push when Odoo changed a workflow file in the branch: click "Sync fork" for it then
+          git push -q origin "refs/remotes/odoo/${SERIES}:refs/heads/${SERIES}"
 
       # A run again after a failed upload finds its own tag; a later commit of the same day gets .1, .2, ...
       - name: Tag the last commit of that day
+        if: steps.plan.outputs.skip != 'true'
         id: tag
         run: |
-          commit=$(git rev-list -n 1 --before="${DATE:0:4}-${DATE:4:2}-${DATE:6:2} 23:59:59 +0000" "origin/$SERIES")
+          commit=$(git rev-list -n 1 --before="${DATE:0:4}-${DATE:4:2}-${DATE:6:2} 23:59:59 +0000" "refs/remotes/odoo/$SERIES")
           [ -n "$commit" ] || { echo "::error::No commit of $SERIES before the end of $DATE"; exit 1; }
           tag="$SERIES/$DATE"
           suffix=0
@@ -81,7 +122,27 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Release
+        if: steps.plan.outputs.skip != 'true'
         uses: alixea-erp/action-module-set@v1
         with:
           tag: ${{ steps.tag.outputs.tag }}
           install-modules: web_enterprise
+
+      - name: Tell Slack it is ready
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          text="Odoo $SERIES of $DATE is ready to try: our image is built and Enterprise is released as $TAG. Try it on a test deployment, then on the admin Settings page approve the image and set $TAG as Latest for Enterprise."
+          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+
+      - name: Tell Slack it failed
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          text="The Enterprise $SERIES release failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand."
+          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
