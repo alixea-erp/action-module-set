@@ -1,0 +1,70 @@
+name: Release a module set
+description: Packs one version of an Odoo module set from a tag of the calling repository and uploads it to the module sets bucket
+
+# The job needs "contents: read" and "id-token: write". A version is released once: the bucket never replaces an object
+inputs:
+  tag:
+    description: The version, a tag of the calling repository such as 19.0/1.4.0
+    required: true
+  install-modules:
+    description: Comma-separated modules to install when the set is turned on. Empty, the installModules of the set's manifest.json
+    required: false
+    default: ''
+  oca-list:
+    description: An OCA list in the calling repository (module_set.py has the format). The modules then come from the listed repositories
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout the set
+      uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ inputs.tag }}
+        path: module-set-src
+
+    - name: Collect the OCA modules
+      if: inputs.oca-list != ''
+      shell: bash
+      env:
+        OCA_LIST: ${{ inputs.oca-list }}
+      run: python3 "$GITHUB_ACTION_PATH/module_set.py" oca-collect "module-set-src/$OCA_LIST" module-set-tree
+
+    - name: Pack
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        INSTALL: ${{ inputs.install-modules }}
+        OCA_LIST: ${{ inputs.oca-list }}
+      run: |
+        tree=module-set-src
+        [ -n "$OCA_LIST" ] && tree=module-set-tree
+        install=()
+        [ -n "$INSTALL" ] && install=(--install "$INSTALL")
+        commit=$(git -C module-set-src rev-parse HEAD)
+        python3 "$GITHUB_ACTION_PATH/module_set.py" pack "$tree" module-set.tar.gz --tag "$TAG" --commit "$commit" "${install[@]}"
+
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::809617916466:role/AlixeaModuleSetRelease
+        aws-region: eu-west-1
+
+    # The key is the source the core gets, github:<repository>#<tag>, so it needs no mapping
+    - name: Upload
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        BUCKET: alixea-module-sets
+      run: |
+        key="$GITHUB_REPOSITORY/$TAG.tar.gz"
+        if ! aws s3api put-object --bucket "$BUCKET" --key "$key" --body module-set.tar.gz --if-none-match '*' > /dev/null 2> module-set-error.txt; then
+          if grep -q PreconditionFailed module-set-error.txt; then
+            echo "::error::$key is released already. A released version is final: release a new one"
+          else
+            cat module-set-error.txt
+          fi
+          exit 1
+        fi
+        echo "Released \`s3://$BUCKET/$key\`" >> "$GITHUB_STEP_SUMMARY"

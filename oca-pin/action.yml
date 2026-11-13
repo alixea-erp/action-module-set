@@ -1,0 +1,27 @@
+name: Pin an OCA list
+description: Fills in the commits of an OCA list from the newest commits of the series branch, and rewrites the list in place
+
+inputs:
+  list:
+    description: The list file, such as 19.0.txt (module_set.py has the format)
+    required: true
+  series:
+    description: The Odoo series, the branch of the OCA repositories
+    required: true
+  newest:
+    description: true moves every repository to its newest commit, otherwise only lines without a commit get one
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        LIST: ${{ inputs.list }}
+        SERIES: ${{ inputs.series }}
+        NEWEST: ${{ inputs.newest }}
+      run: |
+        flags=()
+        [ "$NEWEST" = true ] && flags=(--newest)
+        python3 "$GITHUB_ACTION_PATH/../module_set.py" oca-pin "$LIST" "$SERIES" "${flags[@]}"

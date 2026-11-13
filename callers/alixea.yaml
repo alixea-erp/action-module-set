@@ -1,0 +1,24 @@
+# Copy to .github/workflows/Release.yaml of an Alixea set (alixea-erp/alixea-generic, alixea-erp/alixea-finance): releases a
+# pushed version tag such as 19.0/1.4.0. A tag push runs the workflow of the tagged commit, so this file is on every
+# series branch. "Run workflow" releases a tag made before this file existed.
+name: Release
+
+on:
+  push:
+    tags: ['*.0/*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The version tag to release, such as 19.0/1.4.0
+        required: true
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: alixea-erp/action-module-set@v1
+        with:
+          tag: ${{ inputs.tag || github.ref_name }}

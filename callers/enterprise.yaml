@@ -1,0 +1,86 @@
+# Copy to .github/workflows/Release.yaml of alixea-erp/odoo-enterprise, on its own branch "alixea", which is the fork's default
+# branch: Odoo's branches are never committed on, so syncing them stays a fast-forward. Takes Enterprise at the date of
+# Alixea's Odoo image of the series, tags that day's last commit <series>/<date> and releases it.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      series:
+        type: choice
+        options: ['18.0', '19.0', '20.0']
+        required: true
+      date:
+        description: YYYYMMDD. Empty, the date of the newest component-odoo image of the series
+        required: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    env:
+      SERIES: ${{ inputs.series }}
+      DATE: ${{ inputs.date }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Date of the Odoo image
+        run: |
+          if [ -z "$DATE" ]; then
+            DATE=$(docker buildx imagetools inspect "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$SERIES" --format '{{index .Image.Config.Labels "org.alixea.odoo.release"}}')
+          fi
+          if ! [[ "$DATE" =~ ^20[0-9]{6}$ ]]; then
+            echo "::error::No date. Build the image with Prebuild first, or pass the date"
+            exit 1
+          fi
+          echo "DATE=$DATE" >> "$GITHUB_ENV"
+
+      - name: Sync the series branch from Odoo
+        run: gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch="$SERIES"
+
+      - name: Checkout the series branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.series }}
+          sparse-checkout: .github
+
+      # Only the series branch's commits of the last 60 days, without files: all the date lookup needs
+      - name: Fetch the branch's recent history
+        run: |
+          since=$(date -u -d "${DATE:0:4}-${DATE:4:2}-${DATE:6:2} - 60 days" +%Y-%m-%d)
+          git fetch -q --filter=tree:0 --shallow-since="$since" origin "+refs/heads/${SERIES}:refs/remotes/origin/${SERIES}"
+
+      # A run again after a failed upload finds its own tag; a later commit of the same day gets .1, .2, ...
+      - name: Tag the last commit of that day
+        id: tag
+        run: |
+          commit=$(git rev-list -n 1 --before="${DATE:0:4}-${DATE:4:2}-${DATE:6:2} 23:59:59 +0000" "origin/$SERIES")
+          [ -n "$commit" ] || { echo "::error::No commit of $SERIES before the end of $DATE"; exit 1; }
+          tag="$SERIES/$DATE"
+          suffix=0
+          while existing=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1) && [ -n "$existing" ]; do
+            [ "$existing" = "$commit" ] && break
+            suffix=$((suffix + 1))
+            tag="$SERIES/$DATE.$suffix"
+          done
+          if [ -z "$existing" ]; then
+            git tag "$tag" "$commit"
+            git push origin "refs/tags/$tag"
+          fi
+          echo "Enterprise $SERIES at $commit ($(git log -1 --format=%cI "$commit")) is \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: tag
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: alixea-erp/action-module-set@v1
+        with:
+          tag: ${{ needs.tag.outputs.tag }}
+          install-modules: web_enterprise

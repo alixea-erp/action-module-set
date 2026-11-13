@@ -1,0 +1,77 @@
+# Copy to .github/workflows/Release.yaml of alixea-erp/oca, on main next to the lists 18.0.txt, 19.0.txt and 20.0.txt
+# (module_set.py of alixea-erp/action-module-set has the format). Fills in the commits of new lines, or of every line
+# with "newest", commits the list, tags it <series>/<date> and releases the picked modules with their dependencies.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      series:
+        type: choice
+        options: ['18.0', '19.0', '20.0']
+        required: true
+      newest:
+        description: Move every repository to its newest commit first
+        type: boolean
+        default: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    env:
+      SERIES: ${{ inputs.series }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pin the commits
+        uses: alixea-erp/action-module-set/oca-pin@v1
+        with:
+          list: ${{ inputs.series }}.txt
+          series: ${{ inputs.series }}
+          newest: ${{ inputs.newest }}
+
+      - name: Commit the list
+        run: |
+          if ! git diff --quiet -- "$SERIES.txt"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -q -m "Pins of $SERIES" -- "$SERIES.txt"
+            git push -q origin HEAD
+          fi
+
+      # A run again on the same day with the same list finds its own tag; a changed list gets .1, .2, ...
+      - name: Tag
+        id: tag
+        run: |
+          commit=$(git rev-parse HEAD)
+          tag="$SERIES/$(date -u +%Y%m%d)"
+          base=$tag
+          suffix=0
+          while existing=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1) && [ -n "$existing" ]; do
+            [ "$existing" = "$commit" ] && break
+            suffix=$((suffix + 1))
+            tag="$base.$suffix"
+          done
+          if [ -z "$existing" ]; then
+            git tag "$tag" "$commit"
+            git push -q origin "refs/tags/$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: tag
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: alixea-erp/action-module-set@v1
+        with:
+          tag: ${{ needs.tag.outputs.tag }}
+          oca-list: ${{ inputs.series }}.txt

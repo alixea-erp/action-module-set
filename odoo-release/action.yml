@@ -1,0 +1,21 @@
+name: Release date of Odoo's image
+description: The date Docker Hub's odoo image of a series was released on, which the Enterprise release takes Enterprise at
+
+inputs:
+  series:
+    description: The Odoo series, such as 19.0
+    required: true
+
+outputs:
+  date:
+    description: YYYYMMDD
+    value: ${{ steps.release.outputs.date }}
+
+runs:
+  using: composite
+  steps:
+    - id: release
+      shell: bash
+      env:
+        SERIES: ${{ inputs.series }}
+      run: echo "date=$(python3 "$GITHUB_ACTION_PATH/../module_set.py" odoo-release "$SERIES")" >> "$GITHUB_OUTPUT"
