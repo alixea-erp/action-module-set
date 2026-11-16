@@ -13,8 +13,12 @@ this repository run it.
   module_set.py odoo-release <series>
       Prints the release date of Docker Hub's odoo:<series>, such as 20261112.
 
-The OCA list has one repository per line: "<owner>/<repo> <commit or -> <module> [<module> ...]", "#" for comments.
-A module written as "+name" is also installed when the set is turned on.
+The OCA list has one repository per line: "<owner>/<repo> <commit or -> [<module> ...]". "#" starts a comment, on a
+line of its own or after one.
+  name    that module
+  +name   that module, also installed when the set is turned on
+  *       every module of the repository that is installable and not marked Alpha
+  (none)  nothing of its own: the repository only gives the modules that the others depend on
 """
 import argparse
 import ast
@@ -75,11 +79,22 @@ def read_list(path):
             line = raw.split('#', 1)[0].split()
             if not line:
                 continue
-            if len(line) < 3 or not re.fullmatch(r'[\w.-]+/[\w.-]+', line[0]) or not re.fullmatch(r'-|[0-9a-f]{40}', line[1]):
-                fail(f'{path}:{number}: expected "<owner>/<repo> <commit or -> <module> ...", got "{raw.strip()}"')
-            modules = [name.lstrip('+') for name in line[2:]]
-            install = [name[1:] for name in line[2:] if name.startswith('+')]
-            entries.append({'line': number, 'repository': line[0], 'commit': line[1], 'modules': modules, 'install': install})
+            names = line[2:]
+            if (
+                len(line) < 2
+                or not re.fullmatch(r'[\w.-]+/[\w.-]+', line[0])
+                or not re.fullmatch(r'-|[0-9a-f]{40}', line[1])
+                or not all(re.fullmatch(r'\*|\+?\w+', name) for name in names)
+            ):
+                fail(f'{path}:{number}: expected "<owner>/<repo> <commit or -> [<module> ...]", got "{raw.strip()}"')
+            entries.append({
+                'line': number,
+                'repository': line[0],
+                'commit': line[1],
+                'all': '*' in names,
+                'modules': [name.lstrip('+') for name in names if name != '*'],
+                'install': [name[1:] for name in names if name.startswith('+')],
+            })
     if not entries:
         fail(f'{path} lists no repository')
     return entries
@@ -115,8 +130,24 @@ def oca_collect(args):
         collect(entries, work, args.tree)
 
 
+def pick(entry, manifests):
+    """The modules a line of the list asks for, of its repository's manifests by name: the named ones, and with "*" every
+    one that is installable and not Alpha. Returns them with the Alpha ones "*" left out"""
+    names = list(entry['modules'])
+    alpha = []
+    if entry['all']:
+        for name, manifest in manifests.items():
+            if name in names or not manifest.get('installable', True):
+                continue
+            if manifest.get('development_status') == 'Alpha':
+                alpha.append(name)
+            else:
+                names.append(name)
+    return names, alpha
+
+
 def collect(entries, work, tree):
-    index = {}
+    index, picked, skipped = {}, [], []
     for entry in entries:
         if entry['commit'] == '-':
             fail(f'{entry["repository"]} has no commit, run oca-pin first')
@@ -125,16 +156,19 @@ def collect(entries, work, tree):
         git('init', '-q', cwd=clone)
         git('fetch', '-q', '--depth', '1', f'https://github.com/{entry["repository"]}.git', entry['commit'], cwd=clone)
         git('checkout', '-q', 'FETCH_HEAD', cwd=clone)
-        for name, path in find_modules(clone).items():
+        found = find_modules(clone)
+        for name, path in found.items():
             if name in index:
                 fail(f'Module {name} is in {index[name]["repository"]} and {entry["repository"]}')
             index[name] = {'path': path, 'repository': entry['repository']}
         for name in entry['modules']:
-            if index.get(name, {}).get('repository') != entry['repository']:
+            if name not in found:
                 fail(f'{entry["repository"]} has no module {name} at {entry["commit"][:12]}')
+        names, alpha = pick(entry, {name: read_manifest(path) for name, path in found.items()})
+        picked += names
+        skipped += alpha
 
-    picked = [name for entry in entries for name in entry['modules']]
-    chosen, added, outside, python = choose({name: found['path'] for name, found in index.items()}, picked)
+    chosen, added, outside, python, excludes, unusable = choose({name: found['path'] for name, found in index.items()}, picked)
 
     os.makedirs(tree, exist_ok=True)
     for name in sorted(chosen):
@@ -143,38 +177,61 @@ def collect(entries, work, tree):
     with open(os.path.join(tree, 'manifest.json'), 'w') as file:
         json.dump({'installModules': [name for entry in entries for name in entry['install']]}, file)
 
-    lines = ['### Modules', f'{len(picked)} picked, {len(added)} added as dependencies: {len(chosen)} in the set']
+    lines = ['### Modules', f'{len(chosen) - len(added)} picked, {len(added)} added as dependencies: {len(chosen)} in the set']
     if added:
         lines.append(f'- Added: {", ".join(sorted(added))}')
+    if skipped:
+        lines.append(f'- Left out as Alpha, name one to take it: {", ".join(sorted(skipped))}')
+    for name, users in sorted(unusable.items()):
+        lines.append(f'- **{name} is not installable in this series**, needed by: {", ".join(sorted(users))}')
     if outside:
         lines.append(f'- Needed from outside the list (Odoo, Enterprise, or missing here): {", ".join(sorted(outside))}')
     if python:
         lines.append(f'- **Python packages the image may lack**: {", ".join(sorted(python))}')
+    for name, others in sorted(excludes.items()):
+        lines.append(f'- **{name} cannot be installed together with**: {", ".join(others)}')
+    install = [name for entry in entries for name in entry['install']]
+    for name in sorted(set(install) & set(excludes)):
+        print(f'::warning::{name} is installed when the set is turned on, and fails where {", ".join(excludes[name])} is installed')
     summary(lines)
 
 
 def choose(paths, picked):
     """The picked modules with every module of `paths` (name to folder) they depend on. Returns the chosen names, the
-    ones added as dependencies, the dependencies `paths` does not have, and the Python packages the chosen need"""
-    chosen, added, outside, python = set(), set(), set(), set()
+    ones added as dependencies, the dependencies `paths` does not have, the Python packages the chosen need, the
+    modules each chosen one cannot be installed with, and the dependencies that are not installable with who needs them"""
+    chosen, added, outside, python, excludes, unusable = set(), set(), set(), set(), {}, {}
+    manifests = {}
+
+    def manifest_of(name):
+        if name not in manifests:
+            manifests[name] = read_manifest(paths[name])
+        return manifests[name]
+
+    for name in picked:
+        if not manifest_of(name).get('installable', True):
+            fail(f'{name} is not installable in this series')
+
     pending = list(picked)
     while pending:
         name = pending.pop()
         if name in chosen:
             continue
         chosen.add(name)
-        manifest = read_manifest(paths[name])
-        if not manifest.get('installable', True):
-            fail(f'{name} is not installable in this series')
+        manifest = manifest_of(name)
         python.update(manifest.get('external_dependencies', {}).get('python', []))
+        if manifest.get('excludes'):
+            excludes[name] = sorted(manifest['excludes'])
         for dependency in manifest.get('depends', []):
             if dependency not in paths:
                 outside.add(dependency)
-                continue
-            if dependency not in picked:
-                added.add(dependency)
-            pending.append(dependency)
-    return chosen, added, outside, python
+            elif not manifest_of(dependency).get('installable', True):
+                unusable.setdefault(dependency, set()).add(name)
+            else:
+                if dependency not in picked:
+                    added.add(dependency)
+                pending.append(dependency)
+    return chosen, added, outside, python, excludes, unusable
 
 
 def pack(args):

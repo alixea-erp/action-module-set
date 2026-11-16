@@ -49,15 +49,30 @@ The job that runs the release needs `contents: read` and `id-token: write`.
 One file per series in `alixea-erp/oca`, such as `19.0.txt`. One repository per line:
 
 ```
-# <owner>/<repo> <commit or -> <module> ...
-OCA/web - +web_responsive
-OCA/server-ux - date_range_account
+# <owner>/<repo> <commit or -> [<module> ...]
+OCA/bank-payment - *                  # everything in it
+OCA/web - web_responsive +web_theme   # two modules, the second installed with the set
+OCA/queue -                           # only for dependencies
 ```
 
-- `-` gets the newest commit of the series branch at the next release.
-- `+name` is also installed when the set is turned on.
-- A dependency that is in a listed repository is added by itself. The run's summary names it.
-- The summary also names the Python packages the modules need. The Odoo image may lack them.
+| After the commit | Means                                                                         |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `*`              | Every module of the repository that is installable and not marked Alpha.      |
+| `name`           | That module, also when it is Alpha.                                           |
+| `+name`          | That module, also installed when the set is turned on.                        |
+| nothing          | Nothing of its own. The repository only gives what the other lines depend on. |
+
+- `-` as the commit gets the newest commit of the series branch at the next release.
+- `#` starts a comment, on a line of its own or after one. A release keeps them.
+- A dependency that is in a listed repository is added by itself.
+
+The run's summary names:
+
+- the dependencies it added, and the Alpha modules `*` left out;
+- dependencies it did not find in the list. Odoo's own modules show up there too;
+- the Python packages the modules need. The Odoo image may lack them;
+- a module that cannot be installed together with another, such as `web_responsive` with Odoo Enterprise. Do not
+  give such a module a `+`.
 
 ## Change this action
 

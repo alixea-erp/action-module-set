@@ -14,8 +14,12 @@ def write(path, content=''):
         file.write(content)
 
 
-def make_module(root, name, depends=(), python=(), installable=True):
+def make_module(root, name, depends=(), python=(), installable=True, excludes=(), status=None):
     manifest = {'name': name, 'depends': list(depends), 'installable': installable, 'external_dependencies': {'python': list(python)}}
+    if excludes:
+        manifest['excludes'] = list(excludes)
+    if status:
+        manifest['development_status'] = status
     write(os.path.join(root, name, '__manifest__.py'), repr(manifest))
     write(os.path.join(root, name, '__init__.py'))
     return os.path.join(root, name)
@@ -36,10 +40,61 @@ class ReadList(unittest.TestCase):
         self.assertEqual(entries[0]['line'], 3)
         self.assertEqual(entries[1]['commit'], 'a' * 40)
 
+    def test_every_module_of_a_repository_and_a_repository_for_dependencies_only(self):
+        entries = self.read('OCA/bank-payment - *\nOCA/web - * +web_responsive\nOCA/queue -  # only what the others need\n')
+
+        self.assertEqual([(entry['all'], entry['modules'], entry['install']) for entry in entries], [
+            (True, [], []),
+            (True, ['web_responsive'], ['web_responsive']),
+            (False, [], []),
+        ])
+
     def test_refuses_what_is_not_a_repository_commit_and_module(self):
-        for text in ['OCA/web -\n', 'OCA/web main web_responsive\n', 'https://github.com/OCA/web - web_responsive\n', '# nothing\n']:
+        for text in ['OCA/web\n', 'OCA/web main web_responsive\n', 'https://github.com/OCA/web - web_responsive\n', 'OCA/web - web-responsive\n', 'OCA/web - **\n', '# nothing\n']:
             with self.assertRaises(SystemExit):
                 self.read(text)
+
+
+class Pick(unittest.TestCase):
+    manifests = {
+        'stable': {},
+        'beta': {'development_status': 'Beta'},
+        'alpha': {'development_status': 'Alpha'},
+        'old': {'installable': False},
+    }
+
+    def test_a_star_takes_what_is_installable_and_not_alpha(self):
+        names, alpha = module_set.pick({'all': True, 'modules': []}, self.manifests)
+
+        self.assertEqual(sorted(names), ['beta', 'stable'])
+        self.assertEqual(alpha, ['alpha'])
+
+    def test_a_named_module_is_taken_also_when_alpha(self):
+        names, alpha = module_set.pick({'all': True, 'modules': ['alpha']}, self.manifests)
+
+        self.assertEqual(sorted(names), ['alpha', 'beta', 'stable'])
+        self.assertEqual(alpha, [])
+
+    def test_without_a_star_only_the_named_ones_and_none_for_a_dependency_line(self):
+        self.assertEqual(module_set.pick({'all': False, 'modules': ['beta']}, self.manifests), (['beta'], []))
+        self.assertEqual(module_set.pick({'all': False, 'modules': []}, self.manifests), ([], []))
+
+
+class Pin(unittest.TestCase):
+    def test_only_the_commit_changes_comments_and_spacing_stay(self):
+        text = '# Bank payments\nOCA/bank-payment - *   # SEPA and mandates\n\nOCA/queue ' + 'a' * 40 + '  # for queue_job\n'
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, '19.0.txt')
+            write(path, text)
+            original = module_set.git
+            module_set.git = lambda *args, **kwargs: 'b' * 40 + '\trefs/heads/19.0'
+            try:
+                module_set.oca_pin(argparse.Namespace(list=path, series='19.0', newest=False))
+            finally:
+                module_set.git = original
+
+            with open(path) as file:
+                self.assertEqual(file.read(), text.replace('OCA/bank-payment -', 'OCA/bank-payment ' + 'b' * 40))
 
 
 class Choose(unittest.TestCase):
@@ -52,21 +107,41 @@ class Choose(unittest.TestCase):
                 'unused': make_module(root, 'unused'),
             }
 
-            chosen, added, outside, python = module_set.choose(paths, ['report'])
+            chosen, added, outside, python, excludes, unusable = module_set.choose(paths, ['report'])
 
         self.assertEqual(chosen, {'report', 'range_account', 'range'})
         self.assertEqual(added, {'range_account', 'range'})
         self.assertEqual(outside, {'base', 'account', 'web'})
         self.assertEqual(python, {'pyzbar'})
+        self.assertEqual(excludes, {})
+        self.assertEqual(unusable, {})
+
+    def test_names_the_modules_a_chosen_one_cannot_be_installed_with(self):
+        with tempfile.TemporaryDirectory() as root:
+            paths = {'responsive': make_module(root, 'responsive', excludes=['web_enterprise']), 'other': make_module(root, 'other')}
+
+            _chosen, _added, _outside, _python, excludes, _unusable = module_set.choose(paths, ['responsive', 'other'])
+
+        self.assertEqual(excludes, {'responsive': ['web_enterprise']})
 
     def test_a_picked_dependency_is_not_reported_as_added(self):
         with tempfile.TemporaryDirectory() as root:
             paths = {'a': make_module(root, 'a', depends=['b']), 'b': make_module(root, 'b')}
 
-            chosen, added, _outside, _python = module_set.choose(paths, ['a', 'b'])
+            chosen, added, _outside, _python, _excludes, _unusable = module_set.choose(paths, ['a', 'b'])
 
         self.assertEqual(chosen, {'a', 'b'})
         self.assertEqual(added, set())
+
+    def test_a_dependency_that_is_not_installable_is_left_out_and_named(self):
+        with tempfile.TemporaryDirectory() as root:
+            paths = {'a': make_module(root, 'a', depends=['old']), 'old': make_module(root, 'old', installable=False)}
+
+            chosen, added, _outside, _python, _excludes, unusable = module_set.choose(paths, ['a'])
+
+        self.assertEqual(chosen, {'a'})
+        self.assertEqual(added, set())
+        self.assertEqual(unusable, {'old': {'a'}})
 
     def test_refuses_a_module_that_is_not_installable(self):
         with tempfile.TemporaryDirectory() as root:
