@@ -1,6 +1,9 @@
 # Copy to .github/workflows/Release.yaml of alixea-erp/oca, on main next to the lists 18.0.txt, 19.0.txt and 20.0.txt
 # (module_set.py of alixea-erp/action-module-set has the format). Fills in the commits of new lines, or of every line
-# with "newest", commits the list, tags it <series>/<date> and releases the picked modules with their dependencies.
+# with "newest", commits the lists, tags each series <series>/<date> and releases its modules with their dependencies.
+#
+# "all" does every series in one run and one commit, and leaves out a series whose list is as it was in its last
+# version. Runs wait for each other: two at once would push different commits of the lists.
 name: Release
 
 on:
@@ -8,12 +11,16 @@ on:
     inputs:
       series:
         type: choice
-        options: ['18.0', '19.0', '20.0']
+        options: ['all', '18.0', '19.0', '20.0']
+        default: 'all'
         required: true
       newest:
         description: Move every repository to its newest commit first
         type: boolean
         default: false
+
+concurrency:
+  group: release
 
 jobs:
   tag:
@@ -21,57 +28,96 @@ jobs:
     permissions:
       contents: write
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      releases: ${{ steps.tag.outputs.releases }}
     env:
-      SERIES: ${{ inputs.series }}
+      SELECTED: ${{ inputs.series == 'all' && '18.0 19.0 20.0' || inputs.series }}
 
     steps:
+      # With the tags: a series is compared with its last version
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Pin the commits
+      - name: Pin 18.0
+        if: inputs.series == 'all' || inputs.series == '18.0'
         uses: alixea-erp/action-module-set/oca-pin@v1
         with:
-          list: ${{ inputs.series }}.txt
-          series: ${{ inputs.series }}
+          list: 18.0.txt
+          series: '18.0'
           newest: ${{ inputs.newest }}
 
-      - name: Commit the list
+      - name: Pin 19.0
+        if: inputs.series == 'all' || inputs.series == '19.0'
+        uses: alixea-erp/action-module-set/oca-pin@v1
+        with:
+          list: 19.0.txt
+          series: '19.0'
+          newest: ${{ inputs.newest }}
+
+      - name: Pin 20.0
+        if: inputs.series == 'all' || inputs.series == '20.0'
+        uses: alixea-erp/action-module-set/oca-pin@v1
+        with:
+          list: 20.0.txt
+          series: '20.0'
+          newest: ${{ inputs.newest }}
+
+      - name: Commit the lists
         run: |
-          if ! git diff --quiet -- "$SERIES.txt"; then
+          git add -- '*.txt'
+          if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -q -m "Pins of $SERIES" -- "$SERIES.txt"
+            git commit -q -m "Pins of $SELECTED"
+            # Somebody may have pushed a list while this ran
+            git pull -q --rebase origin "$GITHUB_REF_NAME"
             git push -q origin HEAD
           fi
 
-      # A run again on the same day with the same list finds its own tag; a changed list gets .1, .2, ...
+      # A list holds its commits, so an unchanged list is an unchanged set. "all" leaves such a series out. One series
+      # asked for by name is always released, which is also the way to try again after a failed upload
       - name: Tag
         id: tag
+        env:
+          SERIES: ${{ inputs.series }}
         run: |
-          commit=$(git rev-parse HEAD)
-          tag="$SERIES/$(date -u +%Y%m%d)"
-          base=$tag
-          suffix=0
-          while existing=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1) && [ -n "$existing" ]; do
-            [ "$existing" = "$commit" ] && break
-            suffix=$((suffix + 1))
-            tag="$base.$suffix"
-          done
-          if [ -z "$existing" ]; then
-            git tag "$tag" "$commit"
+          date=$(date -u +%Y%m%d)
+          releases=()
+          for series in $SELECTED; do
+            last=$(git tag --list "$series/*" --sort=-version:refname | head -n 1)
+            if [ "$SERIES" = all ] && [ -n "$last" ] && git diff --quiet "$last" HEAD -- "$series.txt"; then
+              echo "$series: \`$last\` has this list already, nothing to release" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            tag="$series/$date"
+            suffix=0
+            while git rev-parse -q --verify "refs/tags/$tag" > /dev/null; do
+              suffix=$((suffix + 1))
+              tag="$series/$date.$suffix"
+            done
+            git tag "$tag"
             git push -q origin "refs/tags/$tag"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            releases+=("{\"tag\":\"$tag\",\"list\":\"$series.txt\"}")
+          done
+          echo "releases=[$(IFS=,; echo "${releases[*]}")]" >> "$GITHUB_OUTPUT"
 
   release:
+    name: OCA ${{ matrix.tag }}
     needs: tag
+    if: needs.tag.outputs.releases != '[]'
     runs-on: ubuntu-24.04
+    strategy:
+      # A series that fails leaves the others to finish
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.tag.outputs.releases) }}
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: alixea-erp/action-module-set@v1
         with:
-          tag: ${{ needs.tag.outputs.tag }}
-          oca-list: ${{ inputs.series }}.txt
+          tag: ${{ matrix.tag }}
+          oca-list: ${{ matrix.list }}

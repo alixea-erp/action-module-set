@@ -22,7 +22,7 @@ Copy the file for your kind of set from `callers/` to `.github/workflows/Release
 | ------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
 | `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A pushed tag such as `19.0/1.4.0`                                                 |
 | `callers/enterprise.yaml` | The fork of Odoo Enterprise    | By itself, after Pre-Build built an image of a new Odoo date. Or **Run workflow** |
-| `callers/oca.yaml`        | The OCA list                   | **Run workflow** with the series                                                  |
+| `callers/oca.yaml`        | The OCA list                   | **Run workflow**, all series or one                                               |
 
 The Enterprise fork also needs the secret `ODOO_ENTERPRISE_READ_TOKEN`: a token that can read `odoo/enterprise`.
 The workflow only fetches Odoo's commits with it. Everything it writes goes through its own token. Use a token of
