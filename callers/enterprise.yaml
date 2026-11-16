@@ -136,7 +136,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
-          text="Odoo $SERIES of $DATE is ready to try: our image is built and Enterprise is released as $TAG. Try it on a test deployment, then on the admin Settings page approve the image and set $TAG as Latest for Enterprise."
+          text="Odoo $SERIES of $DATE is ready to try: our image is built and Enterprise is released as $TAG. Try it on a test deployment, then approve the image and Enterprise $TAG on the admin Updates page."
           jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
 
       - name: Tell Slack it failed

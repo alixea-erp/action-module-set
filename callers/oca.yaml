@@ -4,9 +4,16 @@
 #
 # "all" does every series in one run and one commit, and leaves out a series whose list is as it was in its last
 # version. Runs wait for each other: two at once would push different commits of the lists.
+#
+# Twice a day it looks for a new Odoo image: when Alixea's image of a series (Pre-Build in component-odoo) has a newer
+# Odoo date than odoo-images.txt says, that series moves to the newest commits and is released, and the date is
+# written down. So the OCA modules follow Odoo without anyone's click, and nothing else moves them. Slack says when a
+# version is ready to try and approve, with the organisation secret SLACK_ODOO_RELEASES_WEBHOOK_URL.
 name: Release
 
 on:
+  schedule:
+    - cron: '30 6,18 * * *'
   workflow_dispatch:
     inputs:
       series:
@@ -29,8 +36,6 @@ jobs:
       contents: write
     outputs:
       releases: ${{ steps.tag.outputs.releases }}
-    env:
-      SELECTED: ${{ inputs.series == 'all' && '18.0 19.0 20.0' || inputs.series }}
 
     steps:
       # With the tags: a series is compared with its last version
@@ -39,31 +44,69 @@ jobs:
         with:
           fetch-depth: 0
 
+      # By hand: the series asked for. By the schedule: the series whose Odoo image has a newer date than
+      # odoo-images.txt has for it, moved to the newest commits. The date is written down also when the series then
+      # has nothing new to release, so OCA's later commits wait for the next image
+      - name: What to release
+        id: plan
+        env:
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
+          SERIES: ${{ inputs.series }}
+          NEWEST: ${{ inputs.newest }}
+        run: |
+          if [ "$SCHEDULED" != true ]; then
+            [ "$SERIES" = all ] && selected="18.0 19.0 20.0" || selected="$SERIES"
+            echo "series=$selected" >> "$GITHUB_OUTPUT"
+            echo "newest=$NEWEST" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          selected=""
+          for series in 18.0 19.0 20.0; do
+            date=$(docker buildx imagetools inspect "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$series" --format '{{index .Image.Config.Labels "org.alixea.odoo.release"}}' || true)
+            if ! [[ "$date" =~ ^20[0-9]{6}$ ]]; then
+              echo "::notice::Our $series image has no Odoo date. Nothing to do for it until Pre-Build has built it"
+              continue
+            fi
+            known=$(awk -v series="$series" '$1 == series { print $2 }' odoo-images.txt 2>/dev/null || true)
+            [[ "$date" > "$known" ]] || continue
+
+            { grep -v "^$series " odoo-images.txt 2>/dev/null || true; echo "$series $date"; } | sort > odoo-images.new
+            mv odoo-images.new odoo-images.txt
+            selected="$selected $series"
+            echo "$series: a new Odoo image, of $date" >> "$GITHUB_STEP_SUMMARY"
+          done
+          [ -n "$selected" ] || echo "No new Odoo image, nothing to release" >> "$GITHUB_STEP_SUMMARY"
+          echo "series=${selected# }" >> "$GITHUB_OUTPUT"
+          echo "newest=true" >> "$GITHUB_OUTPUT"
+
       - name: Pin 18.0
-        if: inputs.series == 'all' || inputs.series == '18.0'
+        if: contains(steps.plan.outputs.series, '18.0')
         uses: alixea-erp/action-module-set/oca-pin@v1
         with:
           list: 18.0.txt
           series: '18.0'
-          newest: ${{ inputs.newest }}
+          newest: ${{ steps.plan.outputs.newest }}
 
       - name: Pin 19.0
-        if: inputs.series == 'all' || inputs.series == '19.0'
+        if: contains(steps.plan.outputs.series, '19.0')
         uses: alixea-erp/action-module-set/oca-pin@v1
         with:
           list: 19.0.txt
           series: '19.0'
-          newest: ${{ inputs.newest }}
+          newest: ${{ steps.plan.outputs.newest }}
 
       - name: Pin 20.0
-        if: inputs.series == 'all' || inputs.series == '20.0'
+        if: contains(steps.plan.outputs.series, '20.0')
         uses: alixea-erp/action-module-set/oca-pin@v1
         with:
           list: 20.0.txt
           series: '20.0'
-          newest: ${{ inputs.newest }}
+          newest: ${{ steps.plan.outputs.newest }}
 
       - name: Commit the lists
+        env:
+          SELECTED: ${{ steps.plan.outputs.series }}
         run: |
           git add -- '*.txt'
           if ! git diff --cached --quiet; then
@@ -75,18 +118,19 @@ jobs:
             git push -q origin HEAD
           fi
 
-      # A list holds its commits, so an unchanged list is an unchanged set. "all" leaves such a series out. One series
-      # asked for by name is always released, which is also the way to try again after a failed upload
+      # A list holds its commits, so an unchanged list is an unchanged set. "all" and the schedule leave such a series
+      # out. One series asked for by name is always released, which is also the way to try again after a failed upload
       - name: Tag
         id: tag
         env:
-          SERIES: ${{ inputs.series }}
+          SELECTED: ${{ steps.plan.outputs.series }}
+          ONE_BY_NAME: ${{ github.event_name != 'schedule' && inputs.series != 'all' }}
         run: |
           date=$(date -u +%Y%m%d)
           releases=()
           for series in $SELECTED; do
             last=$(git tag --list "$series/*" --sort=-version:refname | head -n 1)
-            if [ "$SERIES" = all ] && [ -n "$last" ] && git diff --quiet "$last" HEAD -- "$series.txt"; then
+            if [ "$ONE_BY_NAME" != true ] && [ -n "$last" ] && git diff --quiet "$last" HEAD -- "$series.txt"; then
               echo "$series: \`$last\` has this list already, nothing to release" >> "$GITHUB_STEP_SUMMARY"
               continue
             fi
@@ -102,6 +146,15 @@ jobs:
             releases+=("{\"tag\":\"$tag\",\"list\":\"$series.txt\"}")
           done
           echo "releases=[$(IFS=,; echo "${releases[*]}")]" >> "$GITHUB_OUTPUT"
+
+      - name: Tell Slack it failed
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          text="The OCA release failed before its upload: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand."
+          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
 
   release:
     name: OCA ${{ matrix.tag }}
@@ -121,3 +174,22 @@ jobs:
         with:
           tag: ${{ matrix.tag }}
           oca-list: ${{ matrix.list }}
+
+      - name: Tell Slack it is ready
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          text="The OCA modules are released as $TAG. Read what the release says of dependencies and Python packages: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Try it on a test deployment, then approve it on the admin Updates page."
+          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+
+      - name: Tell Slack it failed
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          text="The OCA release of $TAG failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand for that series."
+          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"

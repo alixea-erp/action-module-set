@@ -22,14 +22,14 @@ Copy the file for your kind of set from `callers/` to `.github/workflows/Release
 | ------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
 | `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A pushed tag such as `19.0/1.4.0`                                                 |
 | `callers/enterprise.yaml` | The fork of Odoo Enterprise    | By itself, after Pre-Build built an image of a new Odoo date. Or **Run workflow** |
-| `callers/oca.yaml`        | The OCA list                   | **Run workflow**, all series or one                                               |
+| `callers/oca.yaml`        | The OCA list                   | By itself, at the newest commits, after such an image. Or **Run workflow**        |
 
 The Enterprise fork also needs the secret `ODOO_ENTERPRISE_READ_TOKEN`: a token that can read `odoo/enterprise`.
 The workflow only fetches Odoo's commits with it. Everything it writes goes through its own token. Use a token of
 an account that has nothing else to reach.
 
-With the organisation secret `SLACK_ODOO_RELEASES_WEBHOOK_URL`, the fork and `component-odoo` say in Slack when a
-release is ready to try, and when a build or a release failed.
+With the organisation secret `SLACK_ODOO_RELEASES_WEBHOOK_URL`, the fork, the OCA list and `component-odoo` say in
+Slack when a release is ready to try, and when a build or a release failed.
 
 A new set repository also needs its name in the release role, `module_set_repositories` in
 `infra/tofu/envs/canary/core/module-sets.tf` of the platform. Without it the upload is refused.
