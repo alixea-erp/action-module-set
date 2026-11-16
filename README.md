@@ -3,7 +3,7 @@
 Releases one version of an Odoo module set to the bucket the Alixea cores download from. For Alixea's developers.
 
 A module set is a repository of Odoo modules: Alixea modules, Alixea Finance, Odoo Enterprise or OCA. Each version is
-a git tag such as `19.0/1.4.0`. The cores never read GitHub. They download the archive this action uploaded.
+a git tag such as `19.0/20261116`. The cores never read GitHub. They download the archive this action uploaded.
 
 ## What a release does
 
@@ -20,7 +20,7 @@ Copy the file for your kind of set from `callers/` to `.github/workflows/Release
 
 | File                      | For                            | A release is                                                                      |
 | ------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
-| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A pushed tag such as `19.0/1.4.0`                                                 |
+| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A push to a series branch such as `19.0`. It is tagged `19.0/<date>` by itself    |
 | `callers/enterprise.yaml` | The fork of Odoo Enterprise    | By itself, after Pre-Build built an image of a new Odoo date. Or **Run workflow** |
 | `callers/oca.yaml`        | The OCA list                   | By itself, at the newest commits, after such an image. Or **Run workflow**        |
 

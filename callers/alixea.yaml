@@ -1,24 +1,85 @@
-# Copy to .github/workflows/Release.yaml of an Alixea set (alixea-erp/alixea-generic, alixea-erp/alixea-finance): releases a
-# pushed version tag such as 19.0/1.4.0. A tag push runs the workflow of the tagged commit, so this file is on every
-# series branch. "Run workflow" releases a tag made before this file existed.
+# Copy to .github/workflows/Release.yaml of an Alixea set (alixea-erp/alixea-generic, alixea-erp/alixea-finance), on
+# every series branch: a push runs the workflow of the pushed branch. A push to a series branch is a release: the
+# pushed commit is tagged <series>/<date>, such as 19.0/20261116, a second one of the day 19.0/20261116.1, and its
+# modules are uploaded. A push that changes no module releases nothing. "Run workflow" on a series branch releases
+# its newest commit, which is also the way to try again after a failed upload.
+#
+# With the organisation secret SLACK_ODOO_RELEASES_WEBHOOK_URL, Slack says when a version is ready to approve.
 name: Release
 
 on:
   push:
-    tags: ['*.0/*']
+    branches: ['18.0', '19.0', '20.0']
+    paths-ignore:
+      - '.github/**'
+      - '.cursor/**'
+      - 'docs/**'
+      - 'scripts/**'
+      - '*.md'
+      - '*.yml'
+      - '.git*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: The version tag to release, such as 19.0/1.4.0
-        required: true
+
+# Two pushes to one branch are released one after the other, so each gets a tag of its own
+concurrency:
+  group: release-${{ github.ref_name }}
 
 jobs:
   release:
+    name: ${{ github.ref_name }}
+    # NOTE! Only in Alixea's organisation: the file is the same in a copy of the repository elsewhere, which has
+    # no right to upload
+    if: github.repository_owner == 'alixea-erp'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
       id-token: write
+    env:
+      SERIES: ${{ github.ref_name }}
+
     steps:
-      - uses: alixea-erp/action-module-set@v1
+      # A run again after a failed upload finds its own tag. Another commit of the same day gets .1, .2, ...
+      - name: Tag the commit
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! [[ "$SERIES" =~ ^[0-9]+\.0$ ]]; then
+            echo "::error::Run this on a series branch such as 19.0, not on $SERIES"
+            exit 1
+          fi
+          tag="$SERIES/$(date -u +%Y%m%d)"
+          suffix=0
+          while existing=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$tag" --jq .sha 2>/dev/null) && [ -n "$existing" ]; do
+            [ "$existing" = "$GITHUB_SHA" ] && break
+            suffix=$((suffix + 1))
+            tag="$SERIES/$(date -u +%Y%m%d).$suffix"
+          done
+          if [ "$existing" != "$GITHUB_SHA" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" > /dev/null
+          fi
+          echo "$SERIES at ${GITHUB_SHA:0:7} is \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Release
+        uses: alixea-erp/action-module-set@v1
         with:
-          tag: ${{ inputs.tag || github.ref_name }}
+          tag: ${{ steps.tag.outputs.tag }}
+
+      - name: Tell Slack it is ready
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          text="${GITHUB_REPOSITORY#*/} is released as $TAG. Try it on a test deployment, then approve it on the admin Updates page."
+          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+
+      - name: Tell Slack it failed
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
+        run: |
+          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          text="The release of ${GITHUB_REPOSITORY#*/} $SERIES failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand on that branch."
+          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
