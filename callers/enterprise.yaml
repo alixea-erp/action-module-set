@@ -100,8 +100,12 @@ jobs:
           fi
           auth=$(printf 'x-access-token:%s' "$ODOO_TOKEN" | base64 -w0)
           echo "::add-mask::$auth"
-          # NOTE! checkout stored the workflow's token for every github.com url. Emptied and set again for this one fetch
-          git -c "http.https://github.com/.extraheader=" -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+          # NOTE! checkout stored the workflow's token for every github.com url. Here Odoo's addresses get the reader
+          # and ours keep the workflow, as the fetch also reads objects the checkout left out from the fork
+          workflow=$(git config --get http.https://github.com/.extraheader)
+          git -c "http.https://github.com/.extraheader=" \
+            -c "http.https://github.com/odoo/.extraheader=AUTHORIZATION: basic $auth" \
+            -c "http.https://github.com/$GITHUB_REPOSITORY_OWNER/.extraheader=$workflow" \
             fetch -q https://github.com/odoo/enterprise.git "+refs/heads/${SERIES}:refs/remotes/odoo/${SERIES}"
           # GitHub refuses this push when Odoo changed a workflow file in the branch: click "Sync fork" for it then
           git push -q origin "refs/remotes/odoo/${SERIES}:refs/heads/${SERIES}"
