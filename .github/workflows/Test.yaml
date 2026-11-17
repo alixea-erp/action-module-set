@@ -12,4 +12,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # The build's test needs the minifier the Build step installs in the Odoo image
+      - run: python3 -m pip install --break-system-packages --quiet python-minifier==2.11.3
       - run: python3 -m unittest

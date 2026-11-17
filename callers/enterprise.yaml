@@ -24,11 +24,16 @@ on:
       date:
         description: YYYYMMDD. Empty, the date of the newest component-odoo image of each series
         required: false
+      skip_check:
+        description: Skip check. Releases without installing the modules first
+        type: boolean
+        default: false
 
 jobs:
   release:
     name: Enterprise ${{ matrix.series }}
-    runs-on: ubuntu-24.04
+    # NOTE! An ARM runner: the install check runs Alixea's Odoo image, which is arm64
+    runs-on: ubuntu-24.04-arm
     strategy:
       # A series that fails, a missing image for one, leaves the others to finish
       fail-fast: false
@@ -124,19 +129,22 @@ jobs:
 
       - name: Release
         if: steps.plan.outputs.skip != 'true'
+        id: release
         uses: alixea-erp/action-module-set@v1
         with:
           tag: ${{ steps.tag.outputs.tag }}
           install-modules: web_enterprise
+          check: ${{ inputs.skip_check != true }}
 
       - name: Tell Slack it is ready
         if: steps.plan.outputs.skip != 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
           TAG: ${{ steps.tag.outputs.tag }}
+          CHECK: ${{ steps.release.outputs.check || 'The install check was skipped.' }}
         run: |
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
-          text="Odoo $SERIES of $DATE is ready to try: our image is built and Enterprise is released as $TAG. Try it on a test deployment, then approve the image and Enterprise $TAG on the admin Updates page."
+          text="Odoo $SERIES of $DATE is ready to try: our image is built and Enterprise is released as $TAG. $CHECK Try it on a test deployment, then approve the image and Enterprise $TAG on the admin Updates page."
           jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
 
       - name: Tell Slack it failed
@@ -146,4 +154,8 @@ jobs:
         run: |
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
           text="The Enterprise $SERIES release failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand."
+          # The action leaves this file when the install check stopped the release
+          if [ -f module-check-out/blocked.txt ]; then
+            text="Enterprise $SERIES was not released, the install check stopped it: $(cat module-check-out/blocked.txt) Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it and release again, or run Release by hand with Skip check."
+          fi
           jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"

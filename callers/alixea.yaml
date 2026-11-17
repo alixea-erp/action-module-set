@@ -4,7 +4,11 @@
 # modules are uploaded. A push that changes no module releases nothing. "Run workflow" on a series branch releases
 # its newest commit, which is also the way to try again after a failed upload.
 #
-# With the organisation secret SLACK_ODOO_RELEASES_WEBHOOK_URL, Slack says when a version is ready to approve.
+# The archive holds the modules' Python as bytecode for Alixea's Odoo image of the series, not the source. Before the
+# upload every module is installed once on a throwaway database, those that need Enterprise with its newest version.
+# A module that fails stops the release, and the run's summary says which one and why. "Run workflow" with "Skip
+# check" releases without that, when a person decides so. With the organisation secret
+# SLACK_ODOO_RELEASES_WEBHOOK_URL, Slack says when a version is ready to approve, and when one was stopped.
 name: Release
 
 on:
@@ -18,7 +22,13 @@ on:
       - '*.md'
       - '*.yml'
       - '.git*'
+      - 'requirements.txt'
   workflow_dispatch:
+    inputs:
+      skip_check:
+        description: Skip check. Releases without installing the modules first
+        type: boolean
+        default: false
 
 # Two pushes to one branch are released one after the other, so each gets a tag of its own
 concurrency:
@@ -30,7 +40,8 @@ jobs:
     # NOTE! Only in Alixea's organisation: the file is the same in a copy of the repository elsewhere, which has
     # no right to upload
     if: github.repository_owner == 'alixea-erp'
-    runs-on: ubuntu-24.04
+    # NOTE! An ARM runner: the build and the install check run Alixea's Odoo image, which is arm64
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
       id-token: write
@@ -62,17 +73,22 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Release
+        id: release
         uses: alixea-erp/action-module-set@v1
         with:
           tag: ${{ steps.tag.outputs.tag }}
+          build: true
+          check: ${{ inputs.skip_check != true }}
+          check-with: alixea-erp/odoo-enterprise
 
       - name: Tell Slack it is ready
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
           TAG: ${{ steps.tag.outputs.tag }}
+          CHECK: ${{ steps.release.outputs.check || 'The install check was skipped.' }}
         run: |
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
-          text="${GITHUB_REPOSITORY#*/} is released as $TAG. Try it on a test deployment, then approve it on the admin Updates page."
+          text="${GITHUB_REPOSITORY#*/} is released as $TAG. $CHECK Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Try it on a test deployment, then approve it on the admin Updates page."
           jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
 
       - name: Tell Slack it failed
@@ -82,4 +98,8 @@ jobs:
         run: |
           [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
           text="The release of ${GITHUB_REPOSITORY#*/} $SERIES failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand on that branch."
+          # The action leaves this file when the install check stopped the release
+          if [ -f module-check-out/blocked.txt ]; then
+            text="${GITHUB_REPOSITORY#*/} $SERIES was not released, the install check stopped it: $(cat module-check-out/blocked.txt) Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it and release again, or run Release by hand on that branch with Skip check."
+          fi
           jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"

@@ -8,8 +8,12 @@ this repository run it.
   module_set.py oca-collect <list> <tree>
       Fetches each listed repository at its commit and copies the picked modules, and the modules of the listed
       repositories they depend on, into <tree>.
+  module_set.py stage <tree> <folder> --tag <tag> --commit <commit> [--install a,b]
+      Copies every module of <tree> into <folder> and writes its manifest.json: what the archive holds.
+  module_set.py archive <folder> <archive>
+      Packs a staged <folder> into a gzipped tar with one top folder.
   module_set.py pack <tree> <archive> --tag <tag> --commit <commit> [--install a,b]
-      Copies every module of <tree> into a gzipped tar with one top folder and writes its manifest.json.
+      Both, for a set that is not built.
   module_set.py odoo-release <series>
       Prints the release date of Docker Hub's odoo:<series>, such as 20261112.
 
@@ -234,7 +238,8 @@ def choose(paths, picked):
     return chosen, added, outside, python, excludes, unusable
 
 
-def pack(args):
+def stage(args):
+    """Copies the modules of args.tree into args.folder and writes its manifest.json"""
     if not re.fullmatch(r'\d+\.\d+/\d+(\.\d+)*', args.tag):
         fail(f'The tag "{args.tag}" is not <series>/<version>, such as 19.0/1.4.0')
     modules = find_modules(args.tree)
@@ -249,19 +254,6 @@ def pack(args):
     if missing:
         fail(f'Modules to install that the set does not have: {", ".join(missing)}')
 
-    with tempfile.TemporaryDirectory(prefix='set-') as work:
-        links = write_archive(args, modules, install, work)
-
-    size = os.path.getsize(args.archive)
-    lines = ['### Archive', f'{len(modules)} modules, {size / 1024 / 1024:.1f} MiB, installs: {", ".join(install) or "nothing"}']
-    if links:
-        lines.append(f'- Left out, the core skips links: {", ".join(links[:10])}{" …" if len(links) > 10 else ""}')
-    summary(lines)
-
-
-def write_archive(args, modules, install, work):
-    """Copies the modules into <work>/set, writes its manifest.json and packs it. Returns the links it left out"""
-    top = 'set'
     for name, path in modules.items():
         # Only a module's own tests folder: static/tests is named in asset bundles
         def ignore(folder, names, module_path=path):
@@ -270,7 +262,7 @@ def write_archive(args, modules, install, work):
                 skipped.add('tests')
             return skipped
 
-        shutil.copytree(path, os.path.join(work, top, name), symlinks=True, ignore=ignore)
+        shutil.copytree(path, os.path.join(args.folder, name), symlinks=True, ignore=ignore)
 
     manifest = {
         'tag': args.tag,
@@ -279,9 +271,14 @@ def write_archive(args, modules, install, work):
         'modules': sorted(modules),
         'installModules': install,
     }
-    with open(os.path.join(work, top, 'manifest.json'), 'w') as file:
+    with open(os.path.join(args.folder, 'manifest.json'), 'w') as file:
         json.dump(manifest, file, indent=2)
 
+
+def archive(args):
+    """Packs the staged args.folder into args.archive under the top folder "set", without links"""
+    with open(os.path.join(args.folder, 'manifest.json')) as file:
+        manifest = json.load(file)
     links = []
 
     # The core unpacks as root, files and folders only: no owner from this machine, and no links
@@ -293,9 +290,23 @@ def write_archive(args, modules, install, work):
         info.uname = info.gname = ''
         return info
 
-    with tarfile.open(args.archive, 'w:gz') as archive:
-        archive.add(os.path.join(work, top), arcname=top, filter=clean)
-    return links
+    with tarfile.open(args.archive, 'w:gz') as packed:
+        packed.add(args.folder, arcname='set', filter=clean)
+
+    size = os.path.getsize(args.archive)
+    install = ', '.join(manifest['installModules']) or 'nothing'
+    built = f', built for {manifest["pythonTag"]}' if manifest.get('pythonTag') else ''
+    lines = ['### Archive', f'{len(manifest["modules"])} modules, {size / 1024 / 1024:.1f} MiB, installs: {install}{built}']
+    if links:
+        lines.append(f'- Left out, the core skips links: {", ".join(links[:10])}{" …" if len(links) > 10 else ""}')
+    summary(lines)
+
+
+def pack(args):
+    with tempfile.TemporaryDirectory(prefix='set-') as work:
+        folder = os.path.join(work, 'set')
+        stage(argparse.Namespace(tree=args.tree, folder=folder, tag=args.tag, commit=args.commit, install=args.install))
+        archive(argparse.Namespace(folder=folder, archive=args.archive))
 
 
 def registry_json(url, token, accept):
@@ -336,6 +347,19 @@ def main():
     command.add_argument('list')
     command.add_argument('tree')
     command.set_defaults(run=oca_collect)
+
+    command = commands.add_parser('stage')
+    command.add_argument('tree')
+    command.add_argument('folder')
+    command.add_argument('--tag', required=True)
+    command.add_argument('--commit', required=True)
+    command.add_argument('--install', help='Comma-separated. Without it, the installModules of the tree\'s manifest.json')
+    command.set_defaults(run=stage)
+
+    command = commands.add_parser('archive')
+    command.add_argument('folder')
+    command.add_argument('archive')
+    command.set_defaults(run=archive)
 
     command = commands.add_parser('pack')
     command.add_argument('tree')

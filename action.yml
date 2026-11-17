@@ -1,5 +1,5 @@
 name: Release a module set
-description: Packs one version of an Odoo module set from a tag of the calling repository and uploads it to the module sets bucket
+description: Packs one version of an Odoo module set from a tag of the calling repository, tries to install its modules and uploads it to the module sets bucket
 
 # The job needs "contents: read" and "id-token: write". A version is released once: the bucket never replaces an object
 inputs:
@@ -14,6 +14,23 @@ inputs:
     description: An OCA list in the calling repository (module_set.py has the format). The modules then come from the listed repositories
     required: false
     default: ''
+  build:
+    description: true ships the modules' Python as bytecode for Alixea's Odoo image of the series. For Alixea's own sets
+    required: false
+    default: 'false'
+  check:
+    description: false releases without the install check. Only for a release a person starts by hand
+    required: false
+    default: 'true'
+  check-with:
+    description: Another set of the bucket, such as alixea-erp/odoo-enterprise. Modules that need its modules are checked with its newest version of the series
+    required: false
+    default: ''
+
+outputs:
+  check:
+    description: One line on what the install check found, for a message
+    value: ${{ steps.check.outputs.line }}
 
 runs:
   using: composite
@@ -31,21 +48,116 @@ runs:
         OCA_LIST: ${{ inputs.oca-list }}
       run: python3 "$GITHUB_ACTION_PATH/module_set.py" oca-collect "module-set-src/$OCA_LIST" module-set-tree
 
-    - name: Pack
+    - name: Stage
       shell: bash
       env:
         TAG: ${{ inputs.tag }}
         INSTALL: ${{ inputs.install-modules }}
         OCA_LIST: ${{ inputs.oca-list }}
+        BUILD: ${{ inputs.build }}
+        CHECK: ${{ inputs.check }}
       run: |
         tree=module-set-src
         [ -n "$OCA_LIST" ] && tree=module-set-tree
         install=()
         [ -n "$INSTALL" ] && install=(--install "$INSTALL")
+        if [ "$(uname -m)" != aarch64 ] && [ "$BUILD$CHECK" != falsefalse ]; then
+          echo "::error::Run this job on an ARM runner (runs-on: ubuntu-24.04-arm): the build and the install check run Alixea's Odoo image, which is arm64"
+          exit 1
+        fi
         commit=$(git -C module-set-src rev-parse HEAD)
-        python3 "$GITHUB_ACTION_PATH/module_set.py" pack "$tree" module-set.tar.gz --tag "$TAG" --commit "$commit" "${install[@]}"
+        python3 "$GITHUB_ACTION_PATH/module_set.py" stage "$tree" module-set --tag "$TAG" --commit "$commit" "${install[@]}"
+        echo "MODULE_SET_IMAGE=public.ecr.aws/p8t2q7f4/alixea/component-odoo:${TAG%%/*}" >> "$GITHUB_ENV"
 
+    # In the Odoo image of the series: bytecode is for the Python that compiled it. A failed build stops the release
+    - name: Build
+      if: inputs.build == 'true'
+      shell: bash
+      run: |
+        printf 'python-minifier==2.11.3 --hash=sha256:37e10e9e318be701eecb48764942426be73ae9f562d75bea4e29c5f66945ce97\n' > module-build-requirements.txt
+        docker run --rm --user root --entrypoint bash \
+          -v "$PWD/module-set:/set" -v "$PWD/module-build-requirements.txt:/requirements.txt:ro" -v "$GITHUB_ACTION_PATH:/action:ro" \
+          "$MODULE_SET_IMAGE" \
+          -c 'pip install --break-system-packages --no-cache-dir --quiet --root-user-action=ignore --require-hashes -r /requirements.txt && python3 /action/module_build.py /set' \
+          | tee -a "$GITHUB_STEP_SUMMARY"
+        sudo chown -R "$(id -u):$(id -g)" module-set
+
+    - name: Pack
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/module_set.py" archive module-set module-set.tar.gz
+
+    # For the other set the check installs with. They last an hour, so the upload gets its own
     - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::809617916466:role/AlixeaModuleSetRelease
+        aws-region: eu-west-1
+
+    # Before the upload, and a module that fails stops the release: nothing reaches the bucket, so the admins never
+    # see the version. A check that could not finish stops it too. It installs the archive's own files, built ones
+    # too, in the Odoo image of the series
+    - name: Install check
+      id: check
+      if: inputs.check == 'true'
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        CHECK_WITH: ${{ inputs.check-with }}
+        BUCKET: alixea-module-sets
+      run: |
+        set +e
+        mkdir -p module-check-with module-check-out
+        chmod 777 module-check-out
+        with=()
+        if [ -n "$CHECK_WITH" ]; then
+          series=${TAG%%/*}
+          key=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$CHECK_WITH/$series/" --query 'Contents[].Key' --output text 2> /dev/null | tr '\t' '\n' | grep '\.tar\.gz$' | sort -V | tail -n 1)
+          if [ -n "$key" ] && aws s3 cp --quiet "s3://$BUCKET/$key" module-check-with.tar.gz && tar -xzf module-check-with.tar.gz -C module-check-with; then
+            version=${key#"$CHECK_WITH/"}
+            with=(--with /with/set --with-name "${CHECK_WITH#*/} ${version%.tar.gz}")
+          else
+            echo "::warning::No version of $CHECK_WITH for $series could be read. The modules that need it are not checked"
+          fi
+        fi
+
+        docker network create module-check > /dev/null
+        # The image of alixea-erp/addon-postgres, so a module that needs pgvector installs as on a deployment
+        docker run -d --rm --name module-check-db --network module-check -e POSTGRES_USER=odoo -e POSTGRES_PASSWORD=odoo \
+          pgvector/pgvector:0.8.7-pg18-trixie > /dev/null
+        for attempt in $(seq 1 30); do docker exec module-check-db pg_isready -q -U odoo && break; sleep 2; done
+        docker run --rm --network module-check --entrypoint python3 \
+          -v "$PWD/module-set:/set:ro" -v "$PWD/module-check-with:/with:ro" -v "$PWD/module-check-out:/out" -v "$GITHUB_ACTION_PATH:/action:ro" \
+          "$MODULE_SET_IMAGE" /action/module_check.py /set --summary /out/summary.md --line /out/line.txt \
+          --db-host module-check-db --db-user odoo --db-password odoo --minutes 90 "${with[@]}"
+        code=$?
+        docker rm -f module-check-db > /dev/null
+        docker network rm module-check > /dev/null
+
+        if [ -s module-check-out/summary.md ]; then
+          cat module-check-out/summary.md >> "$GITHUB_STEP_SUMMARY"
+          line=$(head -n 1 module-check-out/line.txt)
+        else
+          printf '### Install check\n\nIt did not run. The log of this step says why.\n' >> "$GITHUB_STEP_SUMMARY"
+          line="The install check did not run."
+          code=4
+        fi
+        echo "line=$line" >> "$GITHUB_OUTPUT"
+
+        if [ "$code" != 0 ]; then
+          # For the caller's message: an action that fails hands over no output
+          echo "$line" > module-check-out/blocked.txt
+          printf '\n**Not released.** Fix what fails and release again, or run Release by hand with "Skip check".\n' >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Not released. $line"
+          exit 1
+        fi
+        exit 0
+
+    - name: Without the install check
+      if: inputs.check != 'true'
+      shell: bash
+      run: printf '### Install check\n\nSkipped by the person who started this release.\n' >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Configure AWS credentials for the upload (OIDC)
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: arn:aws:iam::809617916466:role/AlixeaModuleSetRelease

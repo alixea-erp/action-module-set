@@ -10,9 +10,40 @@ a git tag such as `19.0/20261116`. The cores never read GitHub. They download th
 1. Checks out the calling repository at the tag.
 2. Copies every module folder into one tree. A module's `tests` folder, `__pycache__` and links are left out.
 3. Writes `manifest.json`: every module, and the modules to install when the set is turned on.
-4. Uploads `s3://alixea-module-sets/<repository>/<tag>.tar.gz`.
+4. Builds the Alixea sets: see below.
+5. Installs every module once. A module that fails stops the release here.
+6. Uploads `s3://alixea-module-sets/<repository>/<tag>.tar.gz`. Only now do the admins see the version.
 
 A released version is final. The bucket refuses to replace an object, so a fix is a new version.
+
+### The build
+
+Only for Alixea's own sets (`build: true`). The archive gets the modules' Python as bytecode, without comments and
+docstrings, and with local names renamed. It is made in Alixea's Odoo image of the series, so it fits that image's
+Python only. `manifest.json` says which one, as `pythonTag`.
+
+Kept as source: `__manifest__.py`, each module's own `__init__.py` (minified), `migrations/`, `upgrades/` and
+`static/`. XML, CSV and JavaScript are as they are.
+
+A traceback from a built module names its file, but the line is of the minified code. Reproduce it with the source.
+
+### The install check
+
+Every module goes into one install on a new database, in Alixea's Odoo image of the series. When one fails, it and
+the modules that need it are taken out, and the rest are installed again. A module that needs another set's modules
+is installed with that set's newest version, on a second database (`check-with`, for the Alixea sets Enterprise).
+
+The check runs before the upload, and **a module that fails stops the release**: nothing is uploaded, so the
+version never shows on the admin Updates page. The run's summary and Slack name the module and its error. A check
+that could not finish, or ran longer than 90 minutes, stops the release too.
+
+To release all the same, start the release by hand and tick **Skip check**. It then uploads without installing
+anything. A release that starts by itself (a push, the schedule) always checks. Not
+checked are modules that are not installable, that need a module no set has, or that need a Python package or
+program the image lacks. The summary lists them with the reason. Such a module that would install by itself
+(`auto_install`) is hidden from Odoo during the check, as it would stop every install.
+
+It takes a few minutes for an Alixea set, about 25 for all of Enterprise.
 
 ## Use it
 
@@ -38,11 +69,12 @@ A new set repository also needs its name in the release role, `module_set_reposi
 
 | Action                                         | What it does                                               |
 | ---------------------------------------------- | ---------------------------------------------------------- |
-| `alixea-erp/action-module-set@v1`              | The release. Inputs: `tag`, `install-modules`, `oca-list`. |
+| `alixea-erp/action-module-set@v1`              | The release. Inputs: `tag`, `install-modules`, `oca-list`, `build`, `check` (false is "Skip check"), `check-with`. Output: `check`, one line for a message. |
 | `alixea-erp/action-module-set/oca-pin@v1`      | Fills in the commits of an OCA list.                       |
 | `alixea-erp/action-module-set/odoo-release@v1` | The date of Docker Hub's `odoo:<series>` image.            |
 
-The job that runs the release needs `contents: read` and `id-token: write`.
+The job that runs the release needs `contents: read` and `id-token: write`, and an ARM runner
+(`runs-on: ubuntu-24.04-arm`): the build and the install check run Alixea's Odoo image, which is arm64.
 
 ## The OCA list
 
@@ -76,7 +108,8 @@ The run's summary names:
 
 ## Change this action
 
-Run the tests with `python3 -m unittest`. They also run on every push.
+Run the tests with `python3 -m unittest`. They also run on every push. The build's tests need `python-minifier`
+and are skipped without it.
 
 The set repositories use the tag `v1`. Move it to release a change:
 
