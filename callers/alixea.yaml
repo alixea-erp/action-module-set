@@ -2,8 +2,8 @@
 # every series branch: a push runs the workflow of the pushed branch. A push to a series branch is a release: the
 # pushed commit is tagged <series>/<date>, such as 19.0/20261116, a second one of the day 19.0/20261116.1, and its
 # modules are uploaded. A push that changes no module releases nothing. "Run workflow" releases the newest commit of
-# every series or of one, which is also the way to try again after a failed upload. A series without modules is
-# left out.
+# the series picked, which is also the way to try again after a failed upload. A series without modules releases
+# nothing.
 #
 # The archive holds the modules' Python as bytecode for Alixea's Odoo image of the series, not the source. Before the
 # upload every module is installed once on a throwaway database, those that need Enterprise with its newest version.
@@ -28,8 +28,8 @@ on:
     inputs:
       series:
         type: choice
-        options: ['all', '18.0', '19.0', '20.0']
-        default: 'all'
+        options: ['18.0', '19.0', '20.0']
+        default: '19.0'
         required: true
       skip_check:
         description: Skip check. Releases without installing the modules first
@@ -38,25 +38,21 @@ on:
 
 jobs:
   release:
-    name: ${{ matrix.series }}
+    name: ${{ inputs.series || github.ref_name }}
     # NOTE! Only in Alixea's organisation: the file is the same in a copy of the repository elsewhere, which has
     # no right to upload
     if: github.repository_owner == 'alixea-erp'
     # NOTE! An ARM runner: the build and the install check run Alixea's Odoo image, which is arm64
     runs-on: ubuntu-24.04-arm
-    strategy:
-      # A series that fails leaves the others to finish
-      fail-fast: false
-      matrix:
-        series: ${{ github.event_name == 'push' && fromJSON(format('["{0}"]', github.ref_name)) || inputs.series == 'all' && fromJSON('["18.0", "19.0", "20.0"]') || fromJSON(format('["{0}"]', inputs.series)) }}
     # Two releases of one series run one after the other, so each gets a tag of its own
     concurrency:
-      group: release-${{ matrix.series }}
+      group: release-${{ inputs.series || github.ref_name }}
     permissions:
       contents: write
       id-token: write
     env:
-      SERIES: ${{ matrix.series }}
+      # A push has no input, its series is the pushed branch
+      SERIES: ${{ inputs.series || github.ref_name }}
 
     steps:
       # A run again after a failed upload finds its own tag. Another commit of the same day gets .1, .2, ...
