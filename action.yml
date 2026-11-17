@@ -134,7 +134,7 @@ runs:
         docker network rm module-check > /dev/null
 
         if [ -s module-check-out/summary.md ]; then
-          cat module-check-out/summary.md >> "$GITHUB_STEP_SUMMARY"
+          cat module-check-out/summary.md | tee -a "$GITHUB_STEP_SUMMARY"
           line=$(head -n 1 module-check-out/line.txt)
         else
           printf '### Install check\n\nIt did not run. The log of this step says why.\n' >> "$GITHUB_STEP_SUMMARY"

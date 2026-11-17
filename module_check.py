@@ -191,6 +191,11 @@ def error_text(log, limit=300):
     return 'Odoo stopped without an error in the log'
 
 
+def log_end(log, lines=120):
+    """The end of Odoo's log, where the traceback of what stopped the install is"""
+    return '\n'.join(log.splitlines()[-lines:])
+
+
 def needing_module(name, remaining, manifests):
     """The modules of remaining that need the module, directly or through another one of remaining"""
     found = set()
@@ -271,8 +276,10 @@ def install_all(odoo, database, addons, modules, manifests, deadline, results):
     attempt = 0
     while remaining:
         attempt += 1
+        print(f'Install {attempt} on {database}: {len(remaining)} modules', flush=True)
         code, log = odoo.run(database, addons, remaining, deadline - time.time(), f'{database}-{attempt}.log')
         if code is None:
+            print('Out of time', flush=True)
             for name in remaining:
                 results[name] = ('not checked', OUT_OF_TIME)
             return
@@ -290,6 +297,9 @@ def install_all(odoo, database, addons, modules, manifests, deadline, results):
 
         failed = failed_module(log)
         error = error_text(log)
+        # The step's log is what a person or an agent reads to fix the module, so it gets the traceback
+        print(f'{len(installed)} installed, then {failed or "the install"} failed: {error}', flush=True)
+        print(f'--- The end of Odoo\'s log\n{log_end(log)}\n---', flush=True)
         odoo.undo_pending(database)
         if failed in remaining:
             results[failed] = ('failed', error)

@@ -51,7 +51,7 @@ Copy the file for your kind of set from `callers/` to `.github/workflows/Release
 
 | File                      | For                            | A release is                                                                      |
 | ------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
-| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A push to a series branch such as `19.0`. It is tagged `19.0/<date>` by itself    |
+| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A push to a series branch, tagged `19.0/<date>` by itself. Or **Run workflow**    |
 | `callers/enterprise.yaml` | The fork of Odoo Enterprise    | By itself, after Pre-Build built an image of a new Odoo date. Or **Run workflow** |
 | `callers/oca.yaml`        | The OCA list                   | By itself, at the newest commits, after such an image. Or **Run workflow**        |
 

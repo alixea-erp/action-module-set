@@ -1,8 +1,9 @@
 # Copy to .github/workflows/Release.yaml of an Alixea set (alixea-erp/alixea-generic, alixea-erp/alixea-finance), on
 # every series branch: a push runs the workflow of the pushed branch. A push to a series branch is a release: the
 # pushed commit is tagged <series>/<date>, such as 19.0/20261116, a second one of the day 19.0/20261116.1, and its
-# modules are uploaded. A push that changes no module releases nothing. "Run workflow" on a series branch releases
-# its newest commit, which is also the way to try again after a failed upload.
+# modules are uploaded. A push that changes no module releases nothing. "Run workflow" releases the newest commit of
+# every series or of one, which is also the way to try again after a failed upload. A series without modules is
+# left out.
 #
 # The archive holds the modules' Python as bytecode for Alixea's Odoo image of the series, not the source. Before the
 # upload every module is installed once on a throwaway database, those that need Enterprise with its newest version.
@@ -25,28 +26,37 @@ on:
       - 'requirements.txt'
   workflow_dispatch:
     inputs:
+      series:
+        type: choice
+        options: ['all', '18.0', '19.0', '20.0']
+        default: 'all'
+        required: true
       skip_check:
         description: Skip check. Releases without installing the modules first
         type: boolean
         default: false
 
-# Two pushes to one branch are released one after the other, so each gets a tag of its own
-concurrency:
-  group: release-${{ github.ref_name }}
-
 jobs:
   release:
-    name: ${{ github.ref_name }}
+    name: ${{ matrix.series }}
     # NOTE! Only in Alixea's organisation: the file is the same in a copy of the repository elsewhere, which has
     # no right to upload
     if: github.repository_owner == 'alixea-erp'
     # NOTE! An ARM runner: the build and the install check run Alixea's Odoo image, which is arm64
     runs-on: ubuntu-24.04-arm
+    strategy:
+      # A series that fails leaves the others to finish
+      fail-fast: false
+      matrix:
+        series: ${{ github.event_name == 'push' && fromJSON(format('["{0}"]', github.ref_name)) || inputs.series == 'all' && fromJSON('["18.0", "19.0", "20.0"]') || fromJSON(format('["{0}"]', inputs.series)) }}
+    # Two releases of one series run one after the other, so each gets a tag of its own
+    concurrency:
+      group: release-${{ matrix.series }}
     permissions:
       contents: write
       id-token: write
     env:
-      SERIES: ${{ github.ref_name }}
+      SERIES: ${{ matrix.series }}
 
     steps:
       # A run again after a failed upload finds its own tag. Another commit of the same day gets .1, .2, ...
@@ -55,24 +65,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! [[ "$SERIES" =~ ^[0-9]+\.0$ ]]; then
-            echo "::error::Run this on a series branch such as 19.0, not on $SERIES"
-            exit 1
+          # A push releases the pushed commit, a run by hand the newest one of the series branch
+          commit=$GITHUB_SHA
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SERIES" --jq .sha)
+            modules=$(gh api "repos/$GITHUB_REPOSITORY/git/trees/$commit?recursive=1" --jq '[.tree[].path | select(endswith("__manifest__.py"))] | length')
+            if [ "$modules" = 0 ]; then
+              echo "::notice::$SERIES has no modules, nothing to release"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           tag="$SERIES/$(date -u +%Y%m%d)"
           suffix=0
           while existing=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$tag" --jq .sha 2>/dev/null) && [ -n "$existing" ]; do
-            [ "$existing" = "$GITHUB_SHA" ] && break
+            [ "$existing" = "$commit" ] && break
             suffix=$((suffix + 1))
             tag="$SERIES/$(date -u +%Y%m%d).$suffix"
           done
-          if [ "$existing" != "$GITHUB_SHA" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" > /dev/null
+          if [ "$existing" != "$commit" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$commit" > /dev/null
           fi
-          echo "$SERIES at ${GITHUB_SHA:0:7} is \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "$SERIES at ${commit:0:7} is \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Release
+        if: steps.tag.outputs.skip != 'true'
         id: release
         uses: alixea-erp/action-module-set@v1
         with:
@@ -82,12 +100,13 @@ jobs:
           check-with: alixea-erp/odoo-enterprise
 
       - name: Tell Slack it is ready
+        if: steps.tag.outputs.skip != 'true'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
           TAG: ${{ steps.tag.outputs.tag }}
           CHECK: ${{ steps.release.outputs.check || 'The install check was skipped.' }}
         run: |
-          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
+          [ -n "$SLACK_WEBHOOK_URL" ] || { echo "::notice::Slack was not told: this repository cannot read the secret SLACK_ODOO_RELEASES_WEBHOOK_URL"; exit 0; }
           text="${GITHUB_REPOSITORY#*/} is released as $TAG. $CHECK Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Try it on a test deployment, then approve it on the admin Updates page."
           jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
 
@@ -96,10 +115,10 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
         run: |
-          [ -n "$SLACK_WEBHOOK_URL" ] || exit 0
-          text="The release of ${GITHUB_REPOSITORY#*/} $SERIES failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand on that branch."
+          [ -n "$SLACK_WEBHOOK_URL" ] || { echo "::notice::Slack was not told: this repository cannot read the secret SLACK_ODOO_RELEASES_WEBHOOK_URL"; exit 0; }
+          text="The release of ${GITHUB_REPOSITORY#*/} $SERIES failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand for $SERIES."
           # The action leaves this file when the install check stopped the release
           if [ -f module-check-out/blocked.txt ]; then
-            text="${GITHUB_REPOSITORY#*/} $SERIES was not released, the install check stopped it: $(cat module-check-out/blocked.txt) Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it and release again, or run Release by hand on that branch with Skip check."
+            text="${GITHUB_REPOSITORY#*/} $SERIES was not released, the install check stopped it: $(cat module-check-out/blocked.txt) Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it and release again, or run Release by hand for $SERIES with Skip check."
           fi
           jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"

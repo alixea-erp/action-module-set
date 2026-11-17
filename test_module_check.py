@@ -1,4 +1,6 @@
 """The decisions of the install check, without Odoo: run with python3 -m unittest"""
+import contextlib
+import io
 import os
 import unittest
 
@@ -143,7 +145,12 @@ class InstallTest(unittest.TestCase):
         manifests = {'a': manifest(['web']), 'broken': manifest(['web']), 'needs_broken': manifest(['broken']), 'z': manifest(['a'])}
         odoo = FakeOdoo(fails={'broken'})
         results = {}
-        module_check.install_all(odoo, 'db', ['set'], list(manifests), manifests, float('inf'), results)
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            module_check.install_all(odoo, 'db', ['set'], list(manifests), manifests, float('inf'), results)
+        # The step's log names the module and has Odoo's own lines on why
+        self.assertIn('1 installed, then broken failed: ValueError: broken is broken', printed.getvalue())
+        self.assertIn('INFO Loading module broken (1/2)', printed.getvalue())
         self.assertEqual(
             results,
             {
