@@ -59,8 +59,12 @@ The Enterprise fork also needs the secret `ODOO_ENTERPRISE_READ_TOKEN`: a token 
 The workflow only fetches Odoo's commits with it. Everything it writes goes through its own token. Use a token of
 an account that has nothing else to reach.
 
-With the organisation secret `SLACK_ODOO_RELEASES_WEBHOOK_URL`, the fork, the OCA list and `component-odoo` say in
-Slack when a release is ready to try, and when a build or a release failed.
+With the secret `SLACK_ODOO_RELEASES_WEBHOOK_URL`, every set and `component-odoo` say in Slack when a release or
+an image is ready to try, and when a build or a release failed. They all send through
+`alixea-erp/action-module-set/slack@v1`, so every message has the same layout: a headline, the facts one per line,
+the next step, and buttons to the run and the admin Updates page. After a release in the same job it adds the
+install check's result by itself, with the first modules that failed and their errors. The Updates page it links
+is its input `updates-url`.
 
 A new set repository also needs its name in the release role, `module_set_repositories` in
 `infra/tofu/envs/canary/core/module-sets.tf` of the platform. Without it the upload is refused.

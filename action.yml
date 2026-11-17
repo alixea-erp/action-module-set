@@ -155,7 +155,11 @@ runs:
     - name: Without the install check
       if: inputs.check != 'true'
       shell: bash
-      run: printf '### Install check\n\nSkipped by the person who started this release.\n' >> "$GITHUB_STEP_SUMMARY"
+      run: |
+        printf '### Install check\n\nSkipped by the person who started this release.\n' >> "$GITHUB_STEP_SUMMARY"
+        # For the Slack message
+        mkdir -p module-check-out
+        echo 'skipped.' > module-check-out/line.txt
 
     - name: Configure AWS credentials for the upload (OIDC)
       uses: aws-actions/configure-aws-credentials@v4

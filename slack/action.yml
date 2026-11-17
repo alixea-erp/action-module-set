@@ -1,0 +1,74 @@
+name: Tell Slack of a release
+description: >
+  One message to the releases channel, in the same layout from every workflow: what happened, the facts, the next
+  step and buttons that open the run and the admin Updates page. After alixea-erp/action-module-set in the same
+  job it adds the install check's result by itself.
+
+inputs:
+  webhook:
+    description: The Slack webhook. Empty when the repository cannot read the secret, and then nothing is sent
+    required: true
+  kind:
+    description: released or failed. failed becomes "stopped by the install check" when the check stopped the release
+    default: failed
+  subject:
+    description: What was released, such as "Enterprise 19.0". The headline is made of it and the kind
+    default: ''
+  headline:
+    description: The whole headline, in place of the one made of the subject
+    default: ''
+  version:
+    description: The released version, such as 19.0/20261117
+    default: ''
+  details:
+    description: A sentence under the facts of a failure, in place of "The run's log says where it stopped."
+    default: ''
+  next:
+    description: The next step, in place of the usual one of the kind
+    default: ''
+  updates-url:
+    description: The admin Updates page, where a version is approved. A button on a released message
+    default: https://alixea.dev/admin/updates
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ inputs.webhook }}
+        KIND: ${{ inputs.kind }}
+        SUBJECT: ${{ inputs.subject }}
+        HEADLINE: ${{ inputs.headline }}
+        VERSION: ${{ inputs.version }}
+        DETAILS: ${{ inputs.details }}
+        NEXT: ${{ inputs.next }}
+        UPDATES_URL: ${{ inputs.updates-url }}
+      run: |
+        [ -n "$SLACK_WEBHOOK_URL" ] || { echo "::notice::Slack was not told: this repository cannot read the secret SLACK_ODOO_RELEASES_WEBHOOK_URL"; exit 0; }
+        # The release action leaves these two files: the check's result, and that it stopped the release
+        check=$(cat module-check-out/line.txt 2> /dev/null || cat module-check-out/blocked.txt 2> /dev/null || true)
+        if [ "$KIND" = failed ] && [ -f module-check-out/blocked.txt ]; then KIND=stopped; fi
+        case "$KIND" in
+          released)
+            headline="$SUBJECT is released"
+            next="Try it on a test deployment, then approve it."
+            ;;
+          stopped)
+            headline="$SUBJECT was not released"
+            next="Fix it and release again, or run Release with Skip check."
+            DETAILS=""
+            ;;
+          *)
+            KIND=failed
+            headline="The $SUBJECT release failed"
+            next="Fix it, then run Release by hand."
+            [ -n "$DETAILS" ] || DETAILS="The run's log says where it stopped."
+            UPDATES_URL=""
+            ;;
+        esac
+        [ "$KIND" = released ] || UPDATES_URL=""
+        jq -n --arg kind "$KIND" --arg headline "${HEADLINE:-$headline}" --arg version "$VERSION" --arg check "$check" \
+          --arg details "$DETAILS" --arg next "${NEXT:-$next}" --arg updates "$UPDATES_URL" \
+          --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+          -f "$GITHUB_ACTION_PATH/message.jq" |
+          curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"

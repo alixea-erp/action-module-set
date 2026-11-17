@@ -97,24 +97,17 @@ jobs:
 
       - name: Tell Slack it is ready
         if: steps.tag.outputs.skip != 'true'
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          CHECK: ${{ steps.release.outputs.check || 'The install check was skipped.' }}
-        run: |
-          [ -n "$SLACK_WEBHOOK_URL" ] || { echo "::notice::Slack was not told: this repository cannot read the secret SLACK_ODOO_RELEASES_WEBHOOK_URL"; exit 0; }
-          text="${GITHUB_REPOSITORY#*/} is released as $TAG. $CHECK Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Try it on a test deployment, then approve it on the admin Updates page."
-          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+        uses: alixea-erp/action-module-set/slack@v1
+        with:
+          webhook: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
+          kind: released
+          subject: ${{ github.event.repository.name }} ${{ env.SERIES }}
+          version: ${{ steps.tag.outputs.tag }}
 
+      # Says so when the install check stopped the release, with the modules that failed
       - name: Tell Slack it failed
         if: failure()
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
-        run: |
-          [ -n "$SLACK_WEBHOOK_URL" ] || { echo "::notice::Slack was not told: this repository cannot read the secret SLACK_ODOO_RELEASES_WEBHOOK_URL"; exit 0; }
-          text="The release of ${GITHUB_REPOSITORY#*/} $SERIES failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it, then run Release by hand for $SERIES."
-          # The action leaves this file when the install check stopped the release
-          if [ -f module-check-out/blocked.txt ]; then
-            text="${GITHUB_REPOSITORY#*/} $SERIES was not released, the install check stopped it: $(cat module-check-out/blocked.txt) Details: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Fix it and release again, or run Release by hand for $SERIES with Skip check."
-          fi
-          jq -n --arg text "$text" '{text: $text}' | curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+        uses: alixea-erp/action-module-set/slack@v1
+        with:
+          webhook: ${{ secrets.SLACK_ODOO_RELEASES_WEBHOOK_URL }}
+          subject: ${{ github.event.repository.name }} ${{ env.SERIES }}

@@ -11,7 +11,7 @@ installed on the same database again: Odoo commits after each module, so what wa
 needs a module of --with (Enterprise, for an Alixea set) is installed on a second database that has --with on its
 path, because --with's modules that install by themselves would change what the first one checks.
 
---summary gets Markdown, --line one line for a message. It exits with 0 when no module failed, 3 when one did, and
+--summary gets Markdown, --line one line for a message and after it the first failed modules. It exits with 0 when no module failed, 3 when one did, and
 4 when it could not check everything: it ran out of time, or could not run at all. The release decides what to do.
 """
 import argparse
@@ -348,8 +348,12 @@ def write_summary(args, odoo, manifests, results, skipped, extra_name):
         line += f', {len(failed)} fail: {", ".join(names[:5])}{" …" if len(names) > 5 else ""}'
     if not_checked:
         line += f', {len(not_checked)} not checked'
+    # After the first line, which is all the release reads: the first failed modules with their errors, for Slack
+    details = [f'`{name}`: {text}' for name, text in sorted(failed.items())[:3]]
+    if len(failed) > 3:
+        details.append(f'and {len(failed) - 3} more')
     with open(args.line, 'w') as file:
-        file.write(line + '.\n')
+        file.write('\n'.join([line + '.'] + details) + '\n')
 
 
 def check(args):

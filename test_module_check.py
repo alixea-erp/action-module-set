@@ -199,3 +199,18 @@ class ViewTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LineTest(unittest.TestCase):
+    def test_the_line_file_names_the_first_failed_modules_after_its_first_line(self):
+        import argparse
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            args = argparse.Namespace(summary=os.path.join(folder, 'summary.md'), line=os.path.join(folder, 'line.txt'))
+            results = {name: ('failed', f'{name} is broken') for name in 'dcba'} | {'fine': ('installed', '')}
+            odoo = argparse.Namespace(version='19.0')
+            module_check.write_summary(args, odoo, {name: manifest() for name in results}, results, {}, '')
+            with open(args.line) as file:
+                lines = file.read().splitlines()
+        self.assertEqual(lines[0], '1 of 5 modules install, 4 fail: a, b, c, d.')
+        self.assertEqual(lines[1:], ['`a`: a is broken', '`b`: b is broken', '`c`: c is broken', 'and 1 more'])
