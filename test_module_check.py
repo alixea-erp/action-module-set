@@ -124,8 +124,10 @@ class FakeOdoo:
         self.state = {}
         self.runs = []
 
-    def run(self, database, addons, modules, seconds, log_name):
+    def run(self, database, addons, modules, seconds, log_name, option='-i'):
         self.runs.append(list(modules))
+        if option == '-u':
+            return (1, 'INFO Loading module sale (3/9)\nodoo.tools.convert.ParseError: no such action\n') if self.fails else (0, '')
         for name in modules:
             if name in self.fails:
                 self.state[name] = 'to install'
@@ -161,6 +163,21 @@ class InstallTest(unittest.TestCase):
             },
         )
         self.assertEqual(odoo.runs, [['a', 'broken', 'needs_broken', 'z'], ['z']])
+
+
+class UpgradeTest(unittest.TestCase):
+    def test_an_upgrade_that_fails_names_the_module_odoo_stopped_on_and_stops_the_release(self):
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            error = module_check.upgrade_all(FakeOdoo(fails={'any'}), 'db', ['set'], float('inf'))
+            worked = module_check.upgrade_all(FakeOdoo(), 'db', ['set'], float('inf'))
+        self.assertEqual(error, 'sale: odoo.tools.convert.ParseError: no such action')
+        self.assertIn('INFO Loading module sale (3/9)', printed.getvalue())
+        self.assertEqual(worked, '')
+        installed = {'a': ('installed', '')}
+        self.assertEqual(module_check.exit_code(installed, error), module_check.EXIT_FAILED)
+        self.assertEqual(module_check.exit_code(installed, module_check.OUT_OF_TIME), module_check.EXIT_INCOMPLETE)
+        self.assertEqual(module_check.exit_code(installed, ''), 0)
 
 
 class ExitCodeTest(unittest.TestCase):
@@ -214,3 +231,17 @@ class LineTest(unittest.TestCase):
                 lines = file.read().splitlines()
         self.assertEqual(lines[0], '1 of 5 modules install, 4 fail: a, b, c, d.')
         self.assertEqual(lines[1:], ['`a`: a is broken', '`b`: b is broken', '`c`: c is broken', 'and 1 more'])
+
+    def test_the_line_says_when_the_upgrade_did_not_work(self):
+        import argparse
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            args = argparse.Namespace(summary=os.path.join(folder, 'summary.md'), line=os.path.join(folder, 'line.txt'))
+            results = {'fine': ('installed', '')}
+            module_check.write_summary(args, argparse.Namespace(version='18.0'), {'fine': manifest()}, results, {}, '', 'sale: ParseError: no such action')
+            with open(args.line) as file:
+                line = file.read()
+            with open(args.summary) as file:
+                summary = file.read()
+        self.assertEqual(line, '1 of 1 modules install. An upgrade of all of them did not work: sale: ParseError: no such action.\n')
+        self.assertIn('#### Upgrade', summary)

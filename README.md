@@ -33,7 +33,10 @@ Every module goes into one install on a new database, in Alixea's Odoo image of 
 the modules that need it are taken out, and the rest are installed again. A module that needs another set's modules
 is installed with that set's newest version, on a second database (`check-with`, for the Alixea sets Enterprise).
 
-The check runs before the upload, and **a module that fails stops the release**: nothing is uploaded, so the
+When every module installed, all installed modules are upgraded once, as an update on a deployment does. A module
+can install and still break the next upgrade, its own or that of a module whose views it changes.
+
+The check runs before the upload, and **a module or an upgrade that fails stops the release**: nothing is uploaded, so the
 version never shows on the admin Updates page. The run's summary and Slack name the module and its error. A check
 that could not finish, or ran longer than 90 minutes, stops the release too.
 

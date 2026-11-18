@@ -11,8 +11,12 @@ installed on the same database again: Odoo commits after each module, so what wa
 needs a module of --with (Enterprise, for an Alixea set) is installed on a second database that has --with on its
 path, because --with's modules that install by themselves would change what the first one checks.
 
---summary gets Markdown, --line one line for a message and after it the first failed modules. It exits with 0 when no module failed, 3 when one did, and
-4 when it could not check everything: it ran out of time, or could not run at all. The release decides what to do.
+When every module installed, all installed modules are upgraded once (`odoo -u all`), as an update on a deployment
+does: a module can install and still break the next upgrade.
+
+--summary gets Markdown, --line one line for a message and after it the first failed modules. It exits with 0 when
+no module and no upgrade failed, 3 when one did, and 4 when it could not check everything: it ran out of time, or
+could not run at all. The release decides what to do.
 """
 import argparse
 import ast
@@ -243,9 +247,9 @@ class Odoo:
     def drop(self, database):
         self.query('postgres', f'DROP DATABASE IF EXISTS "{database}"')
 
-    def run(self, database, addons, modules, seconds, log_name):
-        """Runs `odoo -i` and returns (exit code, log). The code is None after the time ran out"""
-        command = ['odoo', '-c', self.config, '-d', database, f'--addons-path={",".join(addons)}', '-i', ','.join(modules), '--stop-after-init', '--no-http']
+    def run(self, database, addons, modules, seconds, log_name, option='-i'):
+        """Runs `odoo -i`, or `odoo -u`, and returns (exit code, log). The code is None after the time ran out"""
+        command = ['odoo', '-c', self.config, '-d', database, f'--addons-path={",".join(addons)}', option, ','.join(modules), '--stop-after-init', '--no-http']
         # NOTE! Odoo 18 installs demo data unless told otherwise, from 19 on it does not by default
         if self.series and self.series < 19:
             command.append('--without-demo=all')
@@ -315,16 +319,32 @@ def install_all(odoo, database, addons, modules, manifests, deadline, results):
                 remaining.remove(name)
 
 
-def exit_code(results):
-    """What the release gets: a failed module counts before a check that ran out of time"""
-    if any(outcome == 'failed' for outcome, _ in results.values()):
+def upgrade_all(odoo, database, addons, deadline):
+    """Upgrades every installed module, as an update on a deployment does. A module can install and still break the
+    next upgrade, its own or that of a module whose views it changes. Returns the error, '' when it worked"""
+    print(f'Upgrade of all modules on {database}', flush=True)
+    code, log = odoo.run(database, addons, ['all'], deadline - time.time(), f'{database}-upgrade.log', option='-u')
+    if code is None:
+        print('Out of time', flush=True)
+        return OUT_OF_TIME
+    if code == 0:
+        return ''
+    error = f'{failed_module(log) or "a module"}: {error_text(log)}'
+    print(f'The upgrade failed on {error}', flush=True)
+    print(f'--- The end of Odoo\'s log\n{log_end(log)}\n---', flush=True)
+    return error
+
+
+def exit_code(results, upgrade=None):
+    """What the release gets: a failed module or upgrade counts before a check that ran out of time"""
+    if any(outcome == 'failed' for outcome, _ in results.values()) or (upgrade and upgrade != OUT_OF_TIME):
         return EXIT_FAILED
-    if any(text == OUT_OF_TIME for _, text in results.values()):
+    if any(text == OUT_OF_TIME for _, text in results.values()) or upgrade == OUT_OF_TIME:
         return EXIT_INCOMPLETE
     return 0
 
 
-def write_summary(args, odoo, manifests, results, skipped, extra_name):
+def write_summary(args, odoo, manifests, results, skipped, extra_name, upgrade=None):
     counts = {outcome: sum(1 for value in results.values() if value[0] == outcome) for outcome in ('installed', 'failed', 'not checked')}
     not_checked = {**skipped, **{name: text for name, (outcome, text) in results.items() if outcome == 'not checked'}}
     failed = {name: text for name, (outcome, text) in results.items() if outcome == 'failed'}
@@ -333,6 +353,11 @@ def write_summary(args, odoo, manifests, results, skipped, extra_name):
     lines.append(f'{counts["installed"]} of {len(manifests)} modules installed. {len(failed)} failed, {len(not_checked)} not checked.')
     if extra_name:
         lines.append(f'The modules that need {extra_name} were installed with it, on a database of their own.')
+    # None when the upgrade did not run, as a module failed before it
+    if upgrade == '':
+        lines.append('An upgrade of all installed modules worked too.')
+    elif upgrade:
+        lines += ['', '#### Upgrade', '', f'The modules install, but an upgrade of all of them did not work: {upgrade}']
     if failed:
         lines += ['', '#### Failed', '', '| Module | Error |', '| --- | --- |']
         lines += [f'| `{name}` | {escaped} |' for name, escaped in sorted((n, t.replace('|', '/')) for n, t in failed.items())]
@@ -348,6 +373,8 @@ def write_summary(args, odoo, manifests, results, skipped, extra_name):
         line += f', {len(failed)} fail: {", ".join(names[:5])}{" …" if len(names) > 5 else ""}'
     if not_checked:
         line += f', {len(not_checked)} not checked'
+    if upgrade:
+        line += f'. An upgrade of all of them did not work: {upgrade.rstrip(".")}'
     # After the first line, which is all the release reads: the first failed modules with their errors, for Slack
     details = [f'`{name}`: {text}' for name, text in sorted(failed.items())[:3]]
     if len(failed) > 3:
@@ -391,8 +418,14 @@ def check(args):
             _, _, extra_skipped = plan(extra, available, {})
             extra_view = addons_view(args.extra, visible(extra, extra_skipped), os.path.join(work, 'with'))
             install_all(odoo, DATABASES[1], [view, extra_view], second, manifests, deadline, results)
-        write_summary(args, odoo, manifests, results, skipped, args.extra_name if second else '')
-        return exit_code(results)
+
+        upgrade = None
+        if exit_code(results) == 0:
+            upgrade = upgrade_all(odoo, DATABASES[0], [view], deadline) if first else ''
+            if second and not upgrade:
+                upgrade = upgrade_all(odoo, DATABASES[1], [view, extra_view], deadline)
+        write_summary(args, odoo, manifests, results, skipped, args.extra_name if second else '', upgrade)
+        return exit_code(results, upgrade)
     except Exception as error:
         message = f'The install check could not finish: {error}.'
         with open(args.summary, 'w') as file:
