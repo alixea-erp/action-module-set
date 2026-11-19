@@ -2,8 +2,9 @@
 # every series branch: a push runs the workflow of the pushed branch. A push to a series branch is a release: the
 # pushed commit is tagged <series>/<date>, such as 19.0/20261116, a second one of the day 19.0/20261116.1, and its
 # modules are uploaded. A push that changes no module releases nothing. "Run workflow" releases the newest commit of
-# the series picked, which is also the way to try again after a failed upload. A series without modules releases
-# nothing.
+# the series picked. For a commit whose upload failed that is the way to try again, with the same tag. For a commit
+# that is out already it makes the next version of the day, which a new Odoo image needs: the bytecode is built for
+# the image. A series without modules releases nothing.
 #
 # The archive holds the modules' Python as bytecode for Alixea's Odoo image of the series, not the source. Before the
 # upload every module is installed once on a throwaway database, those that need Enterprise with its newest version.
@@ -55,7 +56,14 @@ jobs:
       SERIES: ${{ inputs.series || github.ref_name }}
 
     steps:
-      # A run again after a failed upload finds its own tag. Another commit of the same day gets .1, .2, ...
+      # The tag step asks the bucket whether a version is out already
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::809617916466:role/AlixeaModuleSetRelease
+          aws-region: eu-west-1
+
+      # A run again after a failed upload finds its own tag. Another release of the same day gets .1, .2, ...
       - name: Tag the commit
         id: tag
         env:
@@ -72,10 +80,15 @@ jobs:
               exit 0
             fi
           fi
+          # A version is out when its archive is in the bucket, which never replaces one
+          released() {
+            aws s3api list-objects-v2 --bucket alixea-module-sets --prefix "$GITHUB_REPOSITORY/$1.tar.gz" --query 'Contents[0].Key' --output text 2> /dev/null | grep -q '\.tar\.gz$'
+          }
           tag="$SERIES/$(date -u +%Y%m%d)"
           suffix=0
           while existing=$(gh api "repos/$GITHUB_REPOSITORY/commits/tags/$tag" --jq .sha 2>/dev/null) && [ -n "$existing" ]; do
-            [ "$existing" = "$commit" ] && break
+            # Its own tag of a run whose upload failed is tried again. One that is out is final, this is the next
+            [ "$existing" = "$commit" ] && ! released "$tag" && break
             suffix=$((suffix + 1))
             tag="$SERIES/$(date -u +%Y%m%d).$suffix"
           done
