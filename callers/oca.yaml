@@ -11,7 +11,7 @@
 # version is ready to try and approve, with the organisation secret SLACK_ODOO_RELEASES_WEBHOOK_URL.
 #
 # Alixea's own translations of the modules are in <series>/<module>/i18n_extra/<lang>.po and go into the modules. A
-# change to them is released like a change to the list, by "Run workflow". The run's log lists every term of the
+# change to them is released like a change to the list, by "Run workflow". The run's summary lists every term of the
 # languages below that neither OCA nor we translate, and Slack gets their number.
 name: Release
 

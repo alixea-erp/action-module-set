@@ -4,6 +4,7 @@ import os
 import tarfile
 import tempfile
 import unittest
+import unittest.mock
 
 import module_set
 
@@ -282,13 +283,35 @@ class Translations(unittest.TestCase):
         line = os.path.join(self.work.name, 'line.txt')
         module_set.report_translations(self.tree, ['fi', 'sv'], [], line)
         with open(line) as file:
-            self.assertEqual(file.read(), 'Translations missing: fi 3, sv 3 terms. The log of the run lists them.\n')
+            self.assertEqual(file.read(), 'Translations missing: fi 3, sv 3 terms. The summary of the run lists them.\n')
         os.remove(line)
         for language in ('fi', 'sv'):
             write(os.path.join(self.module, 'i18n', f'{language}.po'),
                   'msgid "Payment Order"\nmsgstr "a"\n\nmsgid "A long term"\nmsgstr "b"\n\nmsgid "Journal Item"\nmsgstr "c"\n')
         module_set.report_translations(self.tree, ['fi', 'sv'], [], line)
         self.assertFalse(os.path.exists(line))
+
+
+    def test_the_summary_lists_the_missing_terms_folded_by_language_and_module(self):
+        write(os.path.join(self.module, 'i18n', 'pay.pot'), TEMPLATE + '\n#. module: pay\nmsgid "<p>Hello</p>"\nmsgstr ""\n')
+        path = os.path.join(self.work.name, 'summary.md')
+        with unittest.mock.patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': path}):
+            module_set.report_translations(self.tree, ['fi'], ['pay'], None)
+            with open(path) as file:
+                text = file.read()
+            self.assertIn('| fi | 4 | 1 of 1 |', text)
+            self.assertIn('<details><summary>fi: 4 missing terms in 1 modules</summary>', text)
+            self.assertIn('<details><summary>pay: 4</summary>\n\n```text\nPayment Order\nA long term\nJournal Item\n<p>Hello</p>\n```', text)
+
+            # Past the size a summary may have, only the modules and their numbers
+            os.remove(path)
+            with unittest.mock.patch.object(module_set, 'TRANSLATIONS_SUMMARY_BYTES', 50):
+                module_set.report_translations(self.tree, ['fi'], [], None)
+            with open(path) as file:
+                text = file.read()
+            self.assertIn('- pay: 4', text)
+            self.assertNotIn('Payment Order', text)
+            self.assertIn('Too many terms are missing to list them here', text)
 
 
 if __name__ == '__main__':

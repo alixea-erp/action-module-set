@@ -34,9 +34,9 @@ class MessageTest(unittest.TestCase):
 
     def test_a_release_with_missing_translations_says_how_many(self):
         result = message(version='19.0/20261119', check='102 of 102 modules install.\n',
-                         translations='Translations missing: fi 3380, sv 2142 terms. The log of the run lists them.')
+                         translations='Translations missing: fi 3380, sv 2142 terms. The summary of the run lists them.')
         self.assertEqual(result['blocks'][1]['text']['text'].split('\n')[-1],
-                         '⚠️ Translations missing: fi 3380, sv 2142 terms. The log of the run lists them.')
+                         '⚠️ Translations missing: fi 3380, sv 2142 terms. The summary of the run lists them.')
 
     def test_a_failure_without_facts_has_no_empty_block(self):
         result = message(kind='failed', headline='The check for new Odoo images failed')

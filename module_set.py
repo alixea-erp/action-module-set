@@ -255,11 +255,20 @@ def missing_translations(module_path, language):
     return [term for term in terms if term not in translated and term not in readme]
 
 
+# A step's summary may be 1 MiB, and the other steps of the release write to the same one
+TRANSLATIONS_SUMMARY_BYTES = 600 * 1024
+
+
+def fold(title, body):
+    return f'<details><summary>{title}</summary>\n\n{body}\n\n</details>'
+
+
 def report_translations(tree, languages, added, line_path):
-    """Every missing term to the log, the numbers to the summary, and one line for the Slack message"""
+    """The numbers and every missing term to the summary, folded by language and module, the terms to the log too,
+    and one line for the Slack message"""
     modules = find_modules(tree)
     lines = ['### Translations', '| Language | Missing terms | Modules with missing terms |', '| --- | --- | --- |']
-    counts = []
+    counts, folds, short_folds = [], [], []
     for language in languages:
         missing = {name: missing_translations(path, language) for name, path in modules.items()}
         missing = {name: terms for name, terms in missing.items() if terms}
@@ -270,14 +279,26 @@ def report_translations(tree, languages, added, line_path):
                 print(f'{language} {name}: {term[:200]}')
         print('::endgroup::')
         lines.append(f'| {language} | {total} | {len(missing)} of {len(modules)} |')
-        if total:
-            counts.append(f'{language} {total}')
+        if not total:
+            continue
+        counts.append(f'{language} {total}')
+        title = f'{language}: {total} missing terms in {len(missing)} modules'
+        # In a code block, as a term may hold HTML
+        folds.append(fold(title, '\n'.join(
+            fold(f'{name}: {len(terms)}', '```text\n' + '\n'.join(term[:200].replace('`' * 3, '') for term in terms) + '\n```')
+            for name, terms in missing.items()
+        )))
+        short_folds.append(fold(title, '\n'.join(f'- {name}: {len(terms)}' for name, terms in missing.items())))
+
     lines.append('')
-    lines.append(f'Our own translations: {", ".join(added) or "none"}. The log of this step lists every missing term.')
-    summary(lines)
+    lines.append(f'Our own translations: {", ".join(added) or "none"}.')
+    if len('\n'.join(folds).encode()) > TRANSLATIONS_SUMMARY_BYTES:
+        folds = short_folds
+        lines.append('Too many terms are missing to list them here. The log of this step has every one.')
+    summary(lines + [''] + folds)
     if line_path and counts:
         with open(line_path, 'w') as file:
-            file.write(f'Translations missing: {", ".join(counts)} terms. The log of the run lists them.\n')
+            file.write(f'Translations missing: {", ".join(counts)} terms. The summary of the run lists them.\n')
 
 
 def pick(entry, manifests):
@@ -337,7 +358,7 @@ def collect(entries, work, tree):
     if outside:
         lines.append(f'- Needed from outside the list (Odoo, Enterprise, or missing here): {", ".join(sorted(outside))}')
     if python:
-        lines.append(f'- **Python packages the image may lack**: {", ".join(sorted(python))}')
+        lines.append(f'- Python packages the modules need: {", ".join(sorted(python))}. The install check fails a module whose package the image lacks')
     for name, others in sorted(excludes.items()):
         lines.append(f'- **{name} cannot be installed together with**: {", ".join(others)}')
     install = [name for entry in entries for name in entry['install']]

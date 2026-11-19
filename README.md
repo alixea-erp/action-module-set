@@ -109,7 +109,7 @@ The run's summary names:
 
 - the dependencies it added, and the Alpha modules `*` left out;
 - dependencies it did not find in the list. Odoo's own modules show up there too;
-- the Python packages the modules need. The Odoo image may lack them;
+- the Python packages the modules need. The install check fails a module whose package the Odoo image lacks;
 - a module that cannot be installed together with another, such as `web_responsive` with Odoo Enterprise. Do not
   give such a module a `+`.
 
@@ -120,9 +120,9 @@ being the list's name without `.txt`. The release copies each into its module wi
 (`i18n/<module>.pot`): Odoo reads from the template where a term belongs, so a file needs only `msgid` and `msgstr`.
 Odoo loads `i18n_extra` after `i18n`, so they are added to OCA's translations and win over them.
 
-With `languages`, such as `fi sv`, the release lists in its log every term of those languages that neither the
-module nor the set's own files translate. The summary has the numbers, and the Slack message of the release says
-how many are missing. A module's README, a term of its own since Odoo 20, is not counted. A file that is not valid
+With `languages`, such as `fi sv`, the release lists every term of those languages that neither the module nor the
+set's own files translate: in the run's summary, folded by language and module, and in its log. The Slack message
+of the release says how many are missing. A module's README, a term of its own since Odoo 20, is not counted. A file that is not valid
 gettext stops the release. Nothing is checked by installing: the install check has no second language.
 
 ## Change this action
