@@ -9,7 +9,7 @@ PROGRAM = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'slack', 'mes
 
 
 def message(**values):
-    arguments = {'kind': 'released', 'headline': 'Enterprise 19.0 is released', 'version': '', 'check': '', 'details': '',
+    arguments = {'kind': 'released', 'headline': 'Enterprise 19.0 is released', 'version': '', 'check': '', 'translations': '', 'details': '',
                  'next': 'Approve it.', 'run': 'https://github.com/run', 'updates': '', **values}
     command = ['jq', '-n', '-f', PROGRAM] + [part for name, value in arguments.items() for part in ('--arg', name, value)]
     return json.loads(subprocess.run(command, check=True, capture_output=True, text=True).stdout)
@@ -31,6 +31,12 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(result['blocks'][1]['text']['text'],
                          'Install check: 669 of 687 modules install, 1 failed, 17 not checked\n• `broken`: ParseError: &lt;field name="x"&gt; &amp; more')
         self.assertEqual([button['text']['text'] for button in result['blocks'][-1]['elements']], ['Open run'])
+
+    def test_a_release_with_missing_translations_says_how_many(self):
+        result = message(version='19.0/20261119', check='102 of 102 modules install.\n',
+                         translations='Translations missing: fi 3380, sv 2142 terms. The log of the run lists them.')
+        self.assertEqual(result['blocks'][1]['text']['text'].split('\n')[-1],
+                         '⚠️ Translations missing: fi 3380, sv 2142 terms. The log of the run lists them.')
 
     def test_a_failure_without_facts_has_no_empty_block(self):
         result = message(kind='failed', headline='The check for new Odoo images failed')

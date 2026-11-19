@@ -14,6 +14,10 @@ inputs:
     description: An OCA list in the calling repository (module_set.py has the format). The modules then come from the listed repositories
     required: false
     default: ''
+  languages:
+    description: With oca-list. Languages such as "fi sv", whose terms that nobody has translated the run lists. The set's own translations are in <series>/<module>/i18n_extra/<lang>.po of the calling repository
+    required: false
+    default: ''
   build:
     description: true ships the modules' Python as bytecode for Alixea's Odoo image of the series. For Alixea's own sets
     required: false
@@ -46,7 +50,11 @@ runs:
       shell: bash
       env:
         OCA_LIST: ${{ inputs.oca-list }}
-      run: python3 "$GITHUB_ACTION_PATH/module_set.py" oca-collect "module-set-src/$OCA_LIST" module-set-tree
+        LANGUAGES: ${{ inputs.languages }}
+      # Our own translations are in the folder named as the list, 19.0 for 19.0.txt
+      run: |
+        python3 "$GITHUB_ACTION_PATH/module_set.py" oca-collect "module-set-src/$OCA_LIST" module-set-tree \
+          --translations "module-set-src/${OCA_LIST%.txt}" --languages "$LANGUAGES" --translations-line module-set-translations.txt
 
     - name: Stage
       shell: bash

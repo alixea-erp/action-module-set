@@ -208,5 +208,88 @@ class Pack(unittest.TestCase):
                     self.pack(archive=archive, **{'tree': tree, **arguments})
 
 
+TEMPLATE = '''msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+#. module: pay
+#: model:ir.model.fields,field_description:pay.field_a
+msgid "Payment Order"
+msgstr ""
+
+#. module: pay
+#: model:ir.model.fields,help:pay.field_a
+msgid ""
+"A long "
+"term"
+msgstr ""
+
+#. module: pay
+#: model:ir.model,name:pay.model_a
+msgid "Journal Item"
+msgstr ""
+
+#. module: base
+#: model:ir.module.module,description:base.module_pay
+msgid "The README of the module"
+msgstr ""
+'''
+
+
+class Translations(unittest.TestCase):
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.tree = os.path.join(self.work.name, 'tree')
+        self.ours = os.path.join(self.work.name, '19.0')
+        self.module = make_module(self.tree, 'pay')
+        write(os.path.join(self.module, 'i18n', 'pay.pot'), TEMPLATE)
+
+    def test_reads_entries_and_leaves_out_the_header_and_fuzzy_and_obsolete_ones(self):
+        path = os.path.join(self.work.name, 'fi.po')
+        write(path, 'msgid ""\nmsgstr ""\n"Language: fi\\n"\n\nmsgid ""\n"A long "\n"term"\nmsgstr "Pitkä"\n'
+                    '#, fuzzy\nmsgid "Guess"\nmsgstr "Arvaus"\n\n#~ msgid "Old"\n#~ msgstr "Vanha"\nmsgid "Empty"\nmsgstr ""\n')
+        self.assertEqual(module_set.read_po(path), {'A long term': 'Pitkä', 'Empty': ''})
+
+    def test_a_line_that_is_not_gettext_is_named(self):
+        path = os.path.join(self.work.name, 'fi.po')
+        write(path, 'msgid "Payment Order"\nmsgstr "Maksu\n')
+        with self.assertRaisesRegex(module_set.PoError, r'fi\.po:2: not a line of a translation file'):
+            module_set.read_po(path)
+
+    def test_ours_go_into_the_module_next_to_a_copy_of_its_template(self):
+        write(os.path.join(self.ours, 'pay', 'i18n_extra', 'fi.po'), 'msgid "Payment Order"\nmsgstr "Maksumääräys"\n')
+        write(os.path.join(self.ours, 'gone', 'i18n_extra', 'fi.po'), 'msgid "x"\nmsgstr "y"\n')
+        self.assertEqual(module_set.add_translations(self.tree, self.ours), ['pay'])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.module, 'i18n_extra'))), ['fi.po', 'pay.pot'])
+        self.assertEqual(module_set.add_translations(self.tree, os.path.join(self.work.name, 'no-such-folder')), [])
+
+    def test_a_translation_file_that_does_not_parse_stops_the_release(self):
+        write(os.path.join(self.ours, 'pay', 'i18n_extra', 'fi.po'), 'msgid "Payment Order"\nmsgstr Maksu\n')
+        with self.assertRaises(SystemExit):
+            module_set.add_translations(self.tree, self.ours)
+
+    def test_missing_is_what_neither_the_module_nor_we_translate_without_the_readme(self):
+        self.assertEqual(module_set.missing_translations(self.module, 'fi'), ['Payment Order', 'A long term', 'Journal Item'])
+        write(os.path.join(self.module, 'i18n', 'fi.po'), 'msgid "Payment Order"\nmsgstr "Maksu"\n\nmsgid "Journal Item"\nmsgstr ""\n')
+        write(os.path.join(self.ours, 'pay', 'i18n_extra', 'fi.po'), 'msgid ""\n"A long term"\nmsgstr "Pitkä"\n')
+        module_set.add_translations(self.tree, self.ours)
+        self.assertEqual(module_set.missing_translations(self.module, 'fi'), ['Journal Item'])
+        self.assertEqual(module_set.missing_translations(self.module, 'sv'), ['Payment Order', 'A long term', 'Journal Item'])
+        self.assertIsNone(module_set.missing_translations(make_module(self.tree, 'bare'), 'fi'))
+
+    def test_the_report_writes_the_line_for_slack_only_when_terms_are_missing(self):
+        line = os.path.join(self.work.name, 'line.txt')
+        module_set.report_translations(self.tree, ['fi', 'sv'], [], line)
+        with open(line) as file:
+            self.assertEqual(file.read(), 'Translations missing: fi 3, sv 3 terms. The log of the run lists them.\n')
+        os.remove(line)
+        for language in ('fi', 'sv'):
+            write(os.path.join(self.module, 'i18n', f'{language}.po'),
+                  'msgid "Payment Order"\nmsgstr "a"\n\nmsgid "A long term"\nmsgstr "b"\n\nmsgid "Journal Item"\nmsgstr "c"\n')
+        module_set.report_translations(self.tree, ['fi', 'sv'], [], line)
+        self.assertFalse(os.path.exists(line))
+
+
 if __name__ == '__main__':
     unittest.main()

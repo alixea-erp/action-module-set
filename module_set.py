@@ -5,9 +5,10 @@ this repository run it.
   module_set.py oca-pin <list> <series> [--newest]
       Fills in the commit of every line whose commit is "-" (every line with --newest) from the newest commit of the
       series branch, and rewrites the list.
-  module_set.py oca-collect <list> <tree>
+  module_set.py oca-collect <list> <tree> [--translations <folder>] [--languages fi,sv]
       Fetches each listed repository at its commit and copies the picked modules, and the modules of the listed
-      repositories they depend on, into <tree>.
+      repositories they depend on, into <tree>. Adds our own translations, <folder>/<module>/i18n_extra/<lang>.po,
+      and says which terms of the languages nobody has translated.
   module_set.py stage <tree> <folder> --tag <tag> --commit <commit> [--install a,b]
       Copies every module of <tree> into <folder> and writes its manifest.json: what the archive holds.
   module_set.py archive <folder> <archive>
@@ -132,6 +133,151 @@ def oca_collect(args):
     entries = read_list(args.list)
     with tempfile.TemporaryDirectory(prefix='oca-') as work:
         collect(entries, work, args.tree)
+    added = add_translations(args.tree, args.translations) if args.translations else []
+    languages = [language for language in re.split(r'[,\s]+', args.languages or '') if language]
+    if languages:
+        report_translations(args.tree, languages, added, args.translations_line)
+
+
+class PoError(Exception):
+    pass
+
+
+README_PLACE = 'model:ir.module.module,description:'
+
+
+def read_po(path, places=None):
+    """The entries of a .po or .pot file, msgid to msgstr, as they are written between the quotes. Without the
+    header and without obsolete and fuzzy entries, which Odoo does not load either. `places` gets where each term is
+    used, its "#:" lines. Raises PoError with the line of what is not gettext"""
+    entries = {}
+    entry, field = {}, None
+
+    def close():
+        nonlocal entry, field
+        if entry.get('msgid') and not entry.get('fuzzy'):
+            entries[entry['msgid']] = entry.get('msgstr', '')
+            if places is not None:
+                places[entry['msgid']] = entry.get('places', [])
+        if 'msgid' in entry:
+            entry = {}
+        field = None
+
+    with open(path, encoding='utf-8') as file:
+        for number, raw in enumerate(file, 1):
+            line = raw.strip()
+            if not line:
+                close()
+                entry = {}
+            elif line.startswith('#'):
+                # Comments come before their entry. "#~" is an obsolete entry, all of it a comment
+                close()
+                if line.startswith('#,') and 'fuzzy' in line:
+                    entry['fuzzy'] = True
+                if line.startswith('#:'):
+                    entry.setdefault('places', []).extend(line[2:].split())
+            else:
+                found = re.fullmatch(r'(?:(msgctxt|msgid|msgid_plural|msgstr)(?:\[(\d+)\])?\s+)?"((?:[^"\\]|\\.)*)"', line)
+                if not found:
+                    raise PoError(f'{path}:{number}: not a line of a translation file: {line[:80]}')
+                keyword, plural, text = found.groups()
+                if keyword is None:
+                    if field is None:
+                        raise PoError(f'{path}:{number}: text that belongs to no msgid or msgstr')
+                    entry[field] += text
+                    continue
+                if keyword in ('msgctxt', 'msgid'):
+                    close()
+                # Of plural forms the first counts. Odoo's modules have none
+                field = keyword if plural in (None, '0') else f'msgstr{plural}'
+                entry[field] = text
+    close()
+    return entries
+
+
+def add_translations(tree, folder):
+    """Copies our own translations, <folder>/<module>/i18n_extra/<lang>.po, into the modules of the tree. Odoo loads
+    i18n_extra after a module's own i18n, so ours are added to OCA's and win where both have a term. Returns the
+    modules that got some"""
+    added = []
+    if not os.path.isdir(folder):
+        return added
+    for name in sorted(os.listdir(folder)):
+        source = os.path.join(folder, name, 'i18n_extra')
+        files = sorted(file for file in os.listdir(source) if file.endswith('.po')) if os.path.isdir(source) else []
+        if not files:
+            continue
+        if not os.path.isdir(os.path.join(tree, name)):
+            print(f'::warning::{folder} has translations for {name}, which is not in the set')
+            continue
+        # NOTE! Odoo reads where a term belongs from the template next to the file, so ours need not say it. Without
+        # one it fails on the first entry, and only on a database that has the language
+        template = os.path.join(tree, name, 'i18n', f'{name}.pot')
+        if not os.path.isfile(template):
+            fail(f'{name} has no i18n/{name}.pot, so its translations in {source} cannot be loaded')
+        target = os.path.join(tree, name, 'i18n_extra')
+        os.makedirs(target, exist_ok=True)
+        shutil.copyfile(template, os.path.join(target, f'{name}.pot'))
+        for file in files:
+            try:
+                read_po(os.path.join(source, file))
+            except (PoError, UnicodeDecodeError) as error:
+                fail(str(error))
+            shutil.copyfile(os.path.join(source, file), os.path.join(target, file))
+        added.append(name)
+    return added
+
+
+def missing_translations(module_path, language):
+    """The terms of a module's template that neither its own i18n nor our i18n_extra translates to the language.
+    None for a module without a template"""
+    name = os.path.basename(module_path)
+    template = os.path.join(module_path, 'i18n', f'{name}.pot')
+    if not os.path.isfile(template):
+        return None
+    translated = {}
+    for folder in ('i18n', 'i18n_extra'):
+        path = os.path.join(module_path, folder, f'{language}.po')
+        if not os.path.isfile(path):
+            continue
+        try:
+            translated.update({term: text for term, text in read_po(path).items() if text})
+        except (PoError, UnicodeDecodeError) as error:
+            print(f'::warning::{error}')
+    places = {}
+    try:
+        terms = read_po(template, places)
+    except (PoError, UnicodeDecodeError) as error:
+        print(f'::warning::{error}')
+        return None
+    # A module's README, which the templates have as a term since Odoo 20, is nobody's to translate
+    readme = {term for term, used in places.items() if used and all(place.startswith(README_PLACE) for place in used)}
+    return [term for term in terms if term not in translated and term not in readme]
+
+
+def report_translations(tree, languages, added, line_path):
+    """Every missing term to the log, the numbers to the summary, and one line for the Slack message"""
+    modules = find_modules(tree)
+    lines = ['### Translations', '| Language | Missing terms | Modules with missing terms |', '| --- | --- | --- |']
+    counts = []
+    for language in languages:
+        missing = {name: missing_translations(path, language) for name, path in modules.items()}
+        missing = {name: terms for name, terms in missing.items() if terms}
+        total = sum(len(terms) for terms in missing.values())
+        print(f'::group::Missing {language} translations: {total} terms in {len(missing)} modules')
+        for name, terms in missing.items():
+            for term in terms:
+                print(f'{language} {name}: {term[:200]}')
+        print('::endgroup::')
+        lines.append(f'| {language} | {total} | {len(missing)} of {len(modules)} |')
+        if total:
+            counts.append(f'{language} {total}')
+    lines.append('')
+    lines.append(f'Our own translations: {", ".join(added) or "none"}. The log of this step lists every missing term.')
+    summary(lines)
+    if line_path and counts:
+        with open(line_path, 'w') as file:
+            file.write(f'Translations missing: {", ".join(counts)} terms. The log of the run lists them.\n')
 
 
 def pick(entry, manifests):
@@ -346,6 +492,9 @@ def main():
     command = commands.add_parser('oca-collect')
     command.add_argument('list')
     command.add_argument('tree')
+    command.add_argument('--translations', help='The folder of our own translations, one folder per module')
+    command.add_argument('--languages', help='Comma-separated, such as fi,sv. Their missing terms are reported')
+    command.add_argument('--translations-line', help='A file for the line the Slack message gets, written when terms are missing')
     command.set_defaults(run=oca_collect)
 
     command = commands.add_parser('stage')

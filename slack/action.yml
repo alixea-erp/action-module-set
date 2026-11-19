@@ -2,7 +2,7 @@ name: Tell Slack of a release
 description: >
   One message to the releases channel, in the same layout from every workflow: what happened, the facts, the next
   step and buttons that open the run and the admin Updates page. After alixea-erp/action-module-set in the same
-  job it adds the install check's result by itself.
+  job it adds the install check's result by itself, and how many translations are missing.
 
 inputs:
   webhook:
@@ -48,6 +48,9 @@ runs:
         # The release action leaves these two files: the check's result, and that it stopped the release
         check=$(cat module-check-out/line.txt 2> /dev/null || cat module-check-out/blocked.txt 2> /dev/null || true)
         if [ "$KIND" = failed ] && [ -f module-check-out/blocked.txt ]; then KIND=stopped; fi
+        # Also from the release action: the languages' terms nobody has translated. Only of a version that is out
+        translations=""
+        [ "$KIND" != released ] || translations=$(cat module-set-translations.txt 2> /dev/null || true)
         case "$KIND" in
           released)
             headline="$SUBJECT is released"
@@ -68,7 +71,7 @@ runs:
         esac
         [ "$KIND" = released ] || UPDATES_URL=""
         jq -n --arg kind "$KIND" --arg headline "${HEADLINE:-$headline}" --arg version "$VERSION" --arg check "$check" \
-          --arg details "$DETAILS" --arg next "${NEXT:-$next}" --arg updates "$UPDATES_URL" \
+          --arg translations "$translations" --arg details "$DETAILS" --arg next "${NEXT:-$next}" --arg updates "$UPDATES_URL" \
           --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
           -f "$GITHUB_ACTION_PATH/message.jq" |
           curl --fail --silent --show-error -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"

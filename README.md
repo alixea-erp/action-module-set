@@ -2,7 +2,7 @@
 
 Releases one version of an Odoo module set to the bucket the Alixea cores download from. For Alixea's developers.
 
-A module set is a repository of Odoo modules: Alixea modules, Alixea Finance, Odoo Enterprise or OCA. Each version is
+A module set is a repository of Odoo modules: Alixea Generic, Alixea Finance, Odoo Enterprise or OCA. Each version is
 a git tag such as `19.0/20261116`. The cores never read GitHub. They download the archive this action uploaded.
 
 ## What a release does
@@ -54,7 +54,7 @@ Copy the file for your kind of set from `callers/` to `.github/workflows/Release
 
 | File                      | For                            | A release is                                                                      |
 | ------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
-| `callers/alixea.yaml`     | Alixea modules, Alixea Finance | A push to a series branch, tagged `19.0/<date>` by itself. Or **Run workflow**    |
+| `callers/alixea.yaml`     | Alixea Generic, Alixea Finance | A push to a series branch, tagged `19.0/<date>` by itself. Or **Run workflow**    |
 | `callers/enterprise.yaml` | The fork of Odoo Enterprise    | By itself, after Pre-Build built an image of a new Odoo date. Or **Run workflow** |
 | `callers/oca.yaml`        | The OCA list                   | By itself, at the newest commits, after such an image. Or **Run workflow**        |
 
@@ -76,7 +76,7 @@ A new set repository also needs its name in the release role, `module_set_reposi
 
 | Action                                         | What it does                                               |
 | ---------------------------------------------- | ---------------------------------------------------------- |
-| `alixea-erp/action-module-set@v1`              | The release. Inputs: `tag`, `install-modules`, `oca-list`, `build`, `check` (false is "Skip check"), `check-with`. Output: `check`, one line for a message. |
+| `alixea-erp/action-module-set@v1`              | The release. Inputs: `tag`, `install-modules`, `oca-list`, `languages`, `build`, `check` (false is "Skip check"), `check-with`. Output: `check`, one line for a message. |
 | `alixea-erp/action-module-set/oca-pin@v1`      | Fills in the commits of an OCA list.                       |
 | `alixea-erp/action-module-set/odoo-release@v1` | The date of Docker Hub's `odoo:<series>` image.            |
 
@@ -112,6 +112,18 @@ The run's summary names:
 - the Python packages the modules need. The Odoo image may lack them;
 - a module that cannot be installed together with another, such as `web_responsive` with Odoo Enterprise. Do not
   give such a module a `+`.
+
+## Translations of an OCA set
+
+The repository of an OCA list may hold its own translations, `<series>/<module>/i18n_extra/<language>.po`, the series
+being the list's name without `.txt`. The release copies each into its module with a copy of the module's template
+(`i18n/<module>.pot`): Odoo reads from the template where a term belongs, so a file needs only `msgid` and `msgstr`.
+Odoo loads `i18n_extra` after `i18n`, so they are added to OCA's translations and win over them.
+
+With `languages`, such as `fi sv`, the release lists in its log every term of those languages that neither the
+module nor the set's own files translate. The summary has the numbers, and the Slack message of the release says
+how many are missing. A module's README, a term of its own since Odoo 20, is not counted. A file that is not valid
+gettext stops the release. Nothing is checked by installing: the install check has no second language.
 
 ## Change this action
 

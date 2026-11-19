@@ -1,6 +1,6 @@
 # The Slack message of a release: a headline, the facts one per line, the next step and link buttons.
-# Arguments: kind (released, stopped, failed), headline, version, check (the check's line file), details, next,
-# run and updates (links, updates may be empty)
+# Arguments: kind (released, stopped, failed), headline, version, check (the check's line file), translations (a line
+# on missing ones, or empty), details, next, run and updates (links, updates may be empty)
 def escape: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
 def section($text): {type: "section", text: {type: "mrkdwn", text: ($text | escape | .[0:2900])}};
 def button($label; $url): {type: "button", text: {type: "plain_text", text: $label}, url: $url};
@@ -14,6 +14,7 @@ def button($label; $url): {type: "button", text: {type: "plain_text", text: $lab
       then sub(", (?<count>[0-9]+) fail: .*?(?<rest>, [0-9]+ not checked)?\\.$"; ", \(.count) failed\(.rest // "")")
       else rtrimstr(".") end)),
     ($lines[1:][] | if startswith("`") then "• " + . else . end),
+    (select($translations != "") | "⚠️ " + $translations),
     (select($details != "") | $details)
   ] | join("\n")) as $facts
 | {
