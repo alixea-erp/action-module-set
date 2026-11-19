@@ -142,7 +142,28 @@ class FakeOdoo:
         self.state = {name: state for name, state in self.state.items() if state != 'to install'}
 
 
+class LeavesOutOdoo(FakeOdoo):
+    """Ends without an error and leaves the named modules uninstalled, as Odoo does with a version of another series"""
+    version = '20.0-20261112'
+
+    def run(self, database, addons, modules, seconds, log_name, option='-i'):
+        self.state.update({name: 'installed' for name in modules if name not in self.fails})
+        return 0, 'WARNING ? odoo.modules.module: The module old has an incompatible version, setting installable=False\nINFO Modules loaded.\n'
+
+
 class InstallTest(unittest.TestCase):
+    def test_a_module_odoo_leaves_out_for_its_version_says_so_and_the_log_has_odoos_lines(self):
+        manifests = {'fine': manifest(['web']), 'old': {**manifest(['web']), 'version': '19.0.1.0.0'}, 'odd': manifest(['web'])}
+        results = {}
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            module_check.install_all(LeavesOutOdoo(fails={'old', 'odd'}), 'db', ['set'], list(manifests), manifests, float('inf'), results)
+        self.assertEqual(results['fine'], ('installed', ''))
+        self.assertEqual(results['old'], ('failed', 'its version 19.0.1.0.0 is not one of Odoo 20.0, so Odoo does not install it. '
+                                                    'Change the version in its __manifest__.py'))
+        self.assertIn('named no error', results['odd'][1])
+        self.assertIn('The module old has an incompatible version', printed.getvalue())
+
     def test_a_failing_module_and_the_ones_that_need_it_are_taken_out_and_the_rest_installed(self):
         manifests = {'a': manifest(['web']), 'broken': manifest(['web']), 'needs_broken': manifest(['broken']), 'z': manifest(['a'])}
         odoo = FakeOdoo(fails={'broken'})

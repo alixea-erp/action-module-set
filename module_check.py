@@ -195,6 +195,16 @@ def error_text(log, limit=300):
     return 'Odoo stopped without an error in the log'
 
 
+def left_out_reason(name, log, manifest, odoo_version):
+    """Why Odoo did not install a module when it ended without an error"""
+    if f'The module {name} has an incompatible version' in log:
+        return (f'its version {manifest.get("version")} is not one of Odoo {odoo_version.split("-")[0]}, so Odoo does not install it. '
+                'Change the version in its __manifest__.py')
+    if 'invalid module names' in log:
+        return 'Odoo does not see it as a module'
+    return 'Odoo did not install it and named no error. The end of Odoo\'s log is in the log of this step'
+
+
 def log_end(log, lines=120):
     """The end of Odoo's log, where the traceback of what stopped the install is"""
     return '\n'.join(log.splitlines()[-lines:])
@@ -294,9 +304,11 @@ def install_all(odoo, database, addons, modules, manifests, deadline, results):
             results[name] = ('installed', '')
         remaining = [name for name in remaining if name not in installed]
         if code == 0:
-            unseen = 'Odoo does not see it as a module' if 'invalid module names' in log else 'Odoo did not install it and named no error'
             for name in remaining:
-                results[name] = ('failed', unseen)
+                results[name] = ('failed', left_out_reason(name, log, manifests[name], odoo.version))
+            # Odoo says why only in a warning, if at all
+            print(f'{len(installed)} installed, {len(remaining)} left out without an error', flush=True)
+            print(f'--- The end of Odoo\'s log\n{log_end(log)}\n---', flush=True)
             return
 
         failed = failed_module(log)
