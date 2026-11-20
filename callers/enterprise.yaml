@@ -58,8 +58,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SCHEDULED: ${{ github.event_name == 'schedule' }}
         run: |
+          # A label of our image, and nothing while the image does not exist yet. The registry limits anonymous reads, so
+          # a read it refuses is tried again and fails the step in the end: it is not an image without the label
+          image_label() {
+            local attempt
+            for attempt in 1 2 3; do
+              if docker buildx imagetools inspect "$1" --format "{{index .Image.Config.Labels \"$2\"}}" 2> "$RUNNER_TEMP/inspect-error.txt"; then return 0; fi
+              if grep -qi 'not found' "$RUNNER_TEMP/inspect-error.txt"; then return 0; fi
+              echo "::warning::Could not read $1, attempt $attempt of 3: $(tail -n 1 "$RUNNER_TEMP/inspect-error.txt")" >&2
+              sleep $((attempt * 20))
+            done
+            echo "::error::Could not read $1. Run the workflow again" >&2
+            return 1
+          }
+
           if [ -z "$DATE" ]; then
-            DATE=$(docker buildx imagetools inspect "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$SERIES" --format '{{index .Image.Config.Labels "org.alixea.odoo.release"}}' || true)
+            DATE=$(image_label "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$SERIES" org.alixea.odoo.release)
           fi
           if ! [[ "$DATE" =~ ^20[0-9]{6}$ ]]; then
             if [ "$SCHEDULED" = true ]; then

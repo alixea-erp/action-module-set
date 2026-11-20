@@ -7,8 +7,9 @@
 #
 # Twice a day it looks for a new Odoo image: when Alixea's image of a series (Pre-Build in component-odoo) has a newer
 # Odoo date than odoo-images.txt says, that series moves to the newest commits and is released, and the date is
-# written down. So the OCA modules follow Odoo without anyone's click, and nothing else moves them. Slack says when a
-# version is ready to try and approve, with the organisation secret SLACK_ODOO_RELEASES_WEBHOOK_URL.
+# written down. The run of Monday morning moves every series to the newest commits, new image or not, so OCA's own
+# fixes come once a week. A series whose list did not change is not released. Slack says when a version is ready
+# to try and approve, with the organisation secret SLACK_ODOO_RELEASES_WEBHOOK_URL.
 #
 # Alixea's own translations of the modules are in <series>/<module>/i18n_extra/<lang>.po and go into the modules. A
 # change to them is released like a change to the list, by "Run workflow". The run's summary lists every term of the
@@ -53,8 +54,8 @@ jobs:
           fetch-depth: 0
 
       # By hand: the series asked for. By the schedule: the series whose Odoo image has a newer date than
-      # odoo-images.txt has for it, moved to the newest commits. The date is written down also when the series then
-      # has nothing new to release, so OCA's later commits wait for the next image
+      # odoo-images.txt has for it, and on Monday morning every series, moved to the newest commits. The date is
+      # written down also when the series then has nothing new to release
       - name: What to release
         id: plan
         env:
@@ -69,20 +70,44 @@ jobs:
             exit 0
           fi
 
+          # A label of our image, and nothing while the image does not exist yet. The registry limits anonymous reads, so
+          # a read it refuses is tried again and fails the step in the end: it is not an image without the label
+          image_label() {
+            local attempt
+            for attempt in 1 2 3; do
+              if docker buildx imagetools inspect "$1" --format "{{index .Image.Config.Labels \"$2\"}}" 2> "$RUNNER_TEMP/inspect-error.txt"; then return 0; fi
+              if grep -qi 'not found' "$RUNNER_TEMP/inspect-error.txt"; then return 0; fi
+              echo "::warning::Could not read $1, attempt $attempt of 3: $(tail -n 1 "$RUNNER_TEMP/inspect-error.txt")" >&2
+              sleep $((attempt * 20))
+            done
+            echo "::error::Could not read $1. Run the workflow again" >&2
+            return 1
+          }
+
+          # NOTE! The schedule's first run of a Monday. GitHub may start it late, so the hour and not the minute
+          weekly=false
+          if [ "$(date -u +%u)" = 1 ] && [ "$(date -u +%H)" -lt 12 ]; then
+            weekly=true
+            echo "Monday: every series moves to OCA's newest commits" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           selected=""
           for series in 18.0 19.0 20.0; do
-            date=$(docker buildx imagetools inspect "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$series" --format '{{index .Image.Config.Labels "org.alixea.odoo.release"}}' || true)
+            date=$(image_label "public.ecr.aws/p8t2q7f4/alixea/component-odoo:$series" org.alixea.odoo.release)
             if ! [[ "$date" =~ ^20[0-9]{6}$ ]]; then
               echo "::notice::Our $series image has no Odoo date. Nothing to do for it until Pre-Build has built it"
               continue
             fi
-            known=$(awk -v series="$series" '$1 == series { print $2 }' odoo-images.txt 2>/dev/null || true)
-            [[ "$date" > "$known" ]] || continue
 
-            { grep -v "^$series " odoo-images.txt 2>/dev/null || true; echo "$series $date"; } | sort > odoo-images.new
-            mv odoo-images.new odoo-images.txt
+            known=$(awk -v series="$series" '$1 == series { print $2 }' odoo-images.txt 2>/dev/null || true)
+            if [[ "$date" > "$known" ]]; then
+              { grep -v "^$series " odoo-images.txt 2>/dev/null || true; echo "$series $date"; } | sort > odoo-images.new
+              mv odoo-images.new odoo-images.txt
+              echo "$series: a new Odoo image, of $date" >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$weekly" != true ]; then
+              continue
+            fi
             selected="$selected $series"
-            echo "$series: a new Odoo image, of $date" >> "$GITHUB_STEP_SUMMARY"
           done
           [ -n "$selected" ] || echo "No new Odoo image, nothing to release" >> "$GITHUB_STEP_SUMMARY"
           echo "series=${selected# }" >> "$GITHUB_OUTPUT"
